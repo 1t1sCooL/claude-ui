@@ -23,6 +23,8 @@ spec:
           env:
             - name: HOME
               value: /home/node
+            - name: OBSIDIAN_PATH
+              value: /home/node/obsidian
             - name: APP_PASSWORD
               valueFrom:
                 secretKeyRef:
@@ -31,6 +33,8 @@ spec:
           volumeMounts:
             - name: claude-auth
               mountPath: /home/node/.claude
+            - name: obsidian
+              mountPath: /home/node/obsidian
           resources:
             requests:
               memory: "256Mi"
@@ -42,6 +46,10 @@ spec:
         - name: claude-auth
           hostPath:
             path: /home/node/.claude
+            type: Directory
+        - name: obsidian
+          hostPath:
+            path: /home/node/obsidian
             type: Directory
       imagePullSecrets:
         - name: ghcr-secret
