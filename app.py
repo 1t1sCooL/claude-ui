@@ -155,15 +155,18 @@ async def ask(request: Request):
             "claude", "-p", prompt,
             "--dangerously-skip-permissions",
             "--max-turns", "20",
-            "--output-format", "text",
+            "--output-format", "json",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
-            env={**os.environ, "HOME": "/root"},
+            env={**os.environ, "HOME": "/home/node"},
         )
-        async for chunk in proc.stdout:
-            text = chunk.decode("utf-8", errors="replace")
-            yield f"data: {json.dumps({'text': text})}\n\n"
-        await proc.wait()
+        stdout, _ = await proc.communicate()
+        try:
+            data = json.loads(stdout.decode("utf-8", errors="replace"))
+            text = data.get("result", "")
+        except Exception:
+            text = stdout.decode("utf-8", errors="replace")
+        yield f"data: {json.dumps({'text': text})}\n\n"
         yield f"data: {json.dumps({'done': True})}\n\n"
 
     return StreamingResponse(
