@@ -76,6 +76,8 @@ HTML = r"""<!DOCTYPE html>
     #header .dot{width:8px;height:8px;border-radius:50%;background:#22c55e}
     #model{margin-left:auto;background:#1a1a1a;border:1px solid #2a2a2a;color:#aaa;padding:6px 10px;border-radius:8px;font-size:13px;outline:none;cursor:pointer}
     #model:focus{border-color:#4f46e5}
+    #new-chat{background:none;border:1px solid #2a2a2a;color:#888;padding:6px 12px;border-radius:8px;font-size:12px;cursor:pointer;margin-left:8px;transition:all .15s}
+    #new-chat:hover{border-color:#4f46e5;color:#fff}
     #messages{flex:1;overflow-y:auto;padding:20px;display:flex;flex-direction:column;gap:16px}
     .msg{max-width:80%;display:flex;flex-direction:column;gap:4px}
     .msg.user{align-self:flex-end}
@@ -112,6 +114,7 @@ HTML = r"""<!DOCTYPE html>
   <div id="header">
     <div class="dot"></div>
     <span>Claude</span>
+    <button id="new-chat" title="Новый чат">+ Новый чат</button>
     <select id="model" title="Модель">
       <option value="claude-sonnet-4-6">Sonnet 4.6</option>
       <option value="claude-opus-4-7">Opus 4.7</option>
@@ -133,6 +136,7 @@ HTML = r"""<!DOCTYPE html>
   <script>
     const TOKEN_KEY = 'claude_token';
     let token = sessionStorage.getItem(TOKEN_KEY) || '';
+    let sessionId = '';
 
     const authEl    = document.getElementById('auth');
     const pwdEl     = document.getElementById('pwd');
@@ -169,6 +173,12 @@ HTML = r"""<!DOCTYPE html>
         authErr.textContent = 'Ошибка соединения';
       }
     }
+
+    document.getElementById('new-chat').addEventListener('click', () => {
+      sessionId = '';
+      messages.innerHTML = '<div class="msg assistant"><div class="bubble">Привет! Чем могу помочь?</div></div>';
+      input.focus();
+    });
 
     loginBtn.addEventListener('click', tryLogin);
     pwdEl.addEventListener('keydown', e => { if (e.key === 'Enter') tryLogin(); });
@@ -224,7 +234,7 @@ HTML = r"""<!DOCTYPE html>
         const res = await fetch('/claude/ask', {
           method: 'POST',
           headers: {'Content-Type': 'application/json', 'X-Token': token},
-          body: JSON.stringify({prompt, model}),
+          body: JSON.stringify({prompt, model, session_id: sessionId}),
         });
         if (res.status === 401) {
           bubble.textContent = '🔒 Сессия истекла, перезагрузи страницу';
@@ -246,6 +256,7 @@ HTML = r"""<!DOCTYPE html>
             if (!line.startsWith('data: ')) continue;
             const data = JSON.parse(line.slice(6));
             if (data.done) break;
+            if (data.session_id) sessionId = data.session_id;
             if (data.text) { bubble.textContent += data.text; messages.scrollTop = messages.scrollHeight; }
           }
         }
@@ -291,6 +302,7 @@ async def ask(request: Request):
     body = await request.json()
     prompt = (body.get("prompt") or "").strip()
     model = (body.get("model") or "claude-sonnet-4-6").strip()
+    session_id = (body.get("session_id") or "").strip()
     allowed_models = {"claude-sonnet-4-6", "claude-opus-4-7", "claude-haiku-4-5-20251001"}
     if model not in allowed_models:
         model = "claude-sonnet-4-6"
@@ -299,26 +311,26 @@ async def ask(request: Request):
 
     async def stream():
         env = {**os.environ, "HOME": "/home/node"}
+        cmd = ["claude", "-p", prompt, "--model", model,
+               "--dangerously-skip-permissions", "--max-turns", "20",
+               "--output-format", "json"]
+        if session_id:
+            cmd += ["--resume", session_id]
         proc = await asyncio.create_subprocess_exec(
-            "claude", "-p", prompt,
-            "--model", model,
-            "--dangerously-skip-permissions",
-            "--max-turns", "20",
-            "--output-format", "json",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-            env=env,
+            *cmd, stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL, env=env,
         )
         stdout, _ = await proc.communicate()
         try:
             data = json.loads(stdout.decode("utf-8", errors="replace"))
             text = data.get("result", "")
+            sid = data.get("session_id", "")
         except Exception:
             text = stdout.decode("utf-8", errors="replace")
-        yield f"data: {json.dumps({'text': text})}\n\n"
+            sid = ""
+        yield f"data: {json.dumps({'text': text, 'session_id': sid})}\n\n"
         yield f"data: {json.dumps({'done': True})}\n\n"
 
-        # Auto-push to GitHub if anything was written to obsidian
         asyncio.create_task(_git_push(env))
 
     return StreamingResponse(
