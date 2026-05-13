@@ -11,23 +11,34 @@ _TOKEN = hmac.new(b"claude-ui", APP_PASSWORD.encode(), hashlib.sha256).hexdigest
 
 async def _git_push(env: dict):
     try:
-        r = await asyncio.create_subprocess_exec(
-            "git", "-C", OBSIDIAN_PATH, "status", "--porcelain",
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, env=env,
-        )
-        out, _ = await r.communicate()
-        if not out.strip():
-            return  # nothing changed
-        for cmd in [
-            ["git", "-C", OBSIDIAN_PATH, "add", "-A"],
-            ["git", "-C", OBSIDIAN_PATH, "commit", "-m", "claude: auto-update"],
-            ["git", "-C", OBSIDIAN_PATH, "push"],
-        ]:
+        git_env = {**env, "HOME": "/home/node", "GIT_AUTHOR_NAME": "Claude VPS",
+                   "GIT_AUTHOR_EMAIL": "claude@vps", "GIT_COMMITTER_NAME": "Claude VPS",
+                   "GIT_COMMITTER_EMAIL": "claude@vps"}
+
+        async def run(*cmd):
             p = await asyncio.create_subprocess_exec(
-                *cmd, stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL, env=env,
+                *cmd, cwd=OBSIDIAN_PATH,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+                env=git_env,
             )
-            await p.communicate()
+            _, err = await p.communicate()
+            return p.returncode, err.decode()
+
+        # Check for changes
+        p = await asyncio.create_subprocess_exec(
+            "git", "status", "--porcelain",
+            cwd=OBSIDIAN_PATH, stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL, env=git_env,
+        )
+        out, _ = await p.communicate()
+        if not out.strip():
+            return
+
+        await run("git", "add", "-A")
+        await run("git", "commit", "-m", "claude: auto-update")
+        await run("git", "pull", "--rebase")
+        await run("git", "push")
     except Exception:
         pass
 
