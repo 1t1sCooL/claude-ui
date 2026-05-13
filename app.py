@@ -157,7 +157,7 @@ async def ask(request: Request):
             "--max-turns", "20",
             "--output-format", "text",
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
+            stderr=asyncio.subprocess.DEVNULL,
             env={**os.environ, "HOME": "/root"},
         )
         async for chunk in proc.stdout:
