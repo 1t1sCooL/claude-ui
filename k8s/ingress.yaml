@@ -1,0 +1,23 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: claude-ui
+  namespace: default
+  annotations:
+    kubernetes.io/ingress.class: traefik
+spec:
+  rules:
+    - host: mmalabugin.ru
+      http:
+        paths:
+          - path: /claude
+            pathType: Prefix
+            backend:
+              service:
+                name: claude-ui
+                port:
+                  number: 80
+  tls:
+    - hosts:
+        - mmalabugin.ru
+      secretName: main-page-tls
