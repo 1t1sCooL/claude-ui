@@ -23,6 +23,11 @@ spec:
           env:
             - name: HOME
               value: /home/node
+            - name: APP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: claude-ui-secret
+                  key: password
           volumeMounts:
             - name: claude-auth
               mountPath: /home/node/.claude

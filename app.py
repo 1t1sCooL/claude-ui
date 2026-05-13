@@ -1,8 +1,17 @@
-import asyncio, json, os
+import asyncio, json, os, hmac, hashlib
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
 
 app = FastAPI()
+
+APP_PASSWORD = os.environ.get("APP_PASSWORD", "")
+_TOKEN = hmac.new(b"claude-ui", APP_PASSWORD.encode(), hashlib.sha256).hexdigest() if APP_PASSWORD else ""
+
+
+def _authorized(request: Request) -> bool:
+    token = request.headers.get("X-Token", "")
+    return bool(_TOKEN) and hmac.compare_digest(token, _TOKEN)
+
 
 HTML = r"""<!DOCTYPE html>
 <html lang="ru">
@@ -14,6 +23,19 @@ HTML = r"""<!DOCTYPE html>
     *{box-sizing:border-box;margin:0;padding:0}
     html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0f0f0f;color:#e5e5e5}
     body{display:flex;flex-direction:column;height:100vh}
+
+    /* ── Auth screen ─────────────────────────────────────────────── */
+    #auth{position:fixed;inset:0;background:#0f0f0f;display:flex;align-items:center;justify-content:center;z-index:100}
+    #auth.hidden{display:none}
+    .auth-card{background:#1a1a1a;border-radius:20px;padding:36px 28px;width:100%;max-width:360px;display:flex;flex-direction:column;gap:16px}
+    .auth-card h2{font-size:20px;font-weight:700;text-align:center}
+    .auth-card input{background:#0f0f0f;border:1px solid #2a2a2a;color:#e5e5e5;padding:14px 16px;border-radius:12px;font-size:16px;outline:none;transition:border-color .15s}
+    .auth-card input:focus{border-color:#4f46e5}
+    .auth-card button{background:#4f46e5;color:#fff;border:none;padding:14px;border-radius:12px;font-size:16px;font-weight:600;cursor:pointer;transition:background .15s}
+    .auth-card button:active{background:#3730a3}
+    .auth-card .err{color:#f87171;font-size:13px;text-align:center;min-height:18px}
+
+    /* ── Chat ────────────────────────────────────────────────────── */
     #header{padding:16px 20px;border-bottom:1px solid #1e1e1e;display:flex;align-items:center;gap:10px;flex-shrink:0}
     #header span{font-size:18px;font-weight:600}
     #header .dot{width:8px;height:8px;border-radius:50%;background:#22c55e}
@@ -26,9 +48,6 @@ HTML = r"""<!DOCTYPE html>
     .msg.assistant .bubble{background:#1a1a1a;color:#e5e5e5;border-bottom-left-radius:4px}
     .bubble.streaming::after{content:'▋';animation:blink .7s infinite;margin-left:2px}
     @keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
-    code{background:#2a2a2a;padding:1px 5px;border-radius:4px;font-size:13px;font-family:'Fira Code',monospace}
-    pre{background:#1e1e1e;border-radius:10px;padding:14px;overflow-x:auto;margin:6px 0}
-    pre code{background:none;padding:0}
     #footer{padding:16px 20px;border-top:1px solid #1e1e1e;flex-shrink:0}
     #form{display:flex;gap:10px;align-items:flex-end}
     #input{flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#e5e5e5;padding:12px 16px;border-radius:14px;font-size:15px;resize:none;outline:none;min-height:48px;max-height:160px;line-height:1.4;font-family:inherit;transition:border-color .15s}
@@ -41,6 +60,18 @@ HTML = r"""<!DOCTYPE html>
   </style>
 </head>
 <body>
+
+  <!-- Auth screen -->
+  <div id="auth">
+    <div class="auth-card">
+      <h2>⚡ Claude</h2>
+      <input type="password" id="pwd" placeholder="Пароль" autofocus>
+      <button id="login-btn">Войти</button>
+      <div class="err" id="auth-err"></div>
+    </div>
+  </div>
+
+  <!-- Chat -->
   <div id="header">
     <div class="dot"></div>
     <span>Claude</span>
@@ -50,7 +81,7 @@ HTML = r"""<!DOCTYPE html>
   </div>
   <div id="footer">
     <form id="form">
-      <textarea id="input" rows="1" placeholder="Напиши сообщение..." autofocus></textarea>
+      <textarea id="input" rows="1" placeholder="Напиши сообщение..."></textarea>
       <button id="send" type="submit">
         <svg viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
       </button>
@@ -58,18 +89,65 @@ HTML = r"""<!DOCTYPE html>
   </div>
 
   <script>
-    const messages = document.getElementById('messages');
-    const input    = document.getElementById('input');
-    const send     = document.getElementById('send');
-    const form     = document.getElementById('form');
+    const TOKEN_KEY = 'claude_token';
+    let token = sessionStorage.getItem(TOKEN_KEY) || '';
 
-    // Auto-resize textarea
+    const authEl    = document.getElementById('auth');
+    const pwdEl     = document.getElementById('pwd');
+    const loginBtn  = document.getElementById('login-btn');
+    const authErr   = document.getElementById('auth-err');
+    const messages  = document.getElementById('messages');
+    const input     = document.getElementById('input');
+    const send      = document.getElementById('send');
+    const form      = document.getElementById('form');
+
+    // ── Auth ──────────────────────────────────────────────────────
+    async function tryLogin() {
+      authErr.textContent = '';
+      const pwd = pwdEl.value.trim();
+      if (!pwd) return;
+      try {
+        const r = await fetch('/claude/auth', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({password: pwd}),
+        });
+        const d = await r.json();
+        if (r.ok && d.token) {
+          token = d.token;
+          sessionStorage.setItem(TOKEN_KEY, token);
+          authEl.classList.add('hidden');
+          input.focus();
+        } else {
+          authErr.textContent = 'Неверный пароль';
+          pwdEl.value = '';
+          pwdEl.focus();
+        }
+      } catch(e) {
+        authErr.textContent = 'Ошибка соединения';
+      }
+    }
+
+    loginBtn.addEventListener('click', tryLogin);
+    pwdEl.addEventListener('keydown', e => { if (e.key === 'Enter') tryLogin(); });
+
+    if (token) {
+      // Validate stored token silently
+      fetch('/claude/auth', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({token}),
+      }).then(r => {
+        if (r.ok) authEl.classList.add('hidden');
+        else { sessionStorage.removeItem(TOKEN_KEY); token = ''; }
+      }).catch(() => {});
+    }
+
+    // ── Chat ──────────────────────────────────────────────────────
     input.addEventListener('input', () => {
       input.style.height = 'auto';
       input.style.height = Math.min(input.scrollHeight, 160) + 'px';
     });
-
-    // Submit on Enter (Shift+Enter = newline)
     input.addEventListener('keydown', e => {
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); form.dispatchEvent(new Event('submit')); }
     });
@@ -102,32 +180,35 @@ HTML = r"""<!DOCTYPE html>
       try {
         const res = await fetch('/claude/ask', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt }),
+          headers: {'Content-Type': 'application/json', 'X-Token': token},
+          body: JSON.stringify({prompt}),
         });
-
+        if (res.status === 401) {
+          bubble.textContent = '🔒 Сессия истекла, перезагрузи страницу';
+          sessionStorage.removeItem(TOKEN_KEY);
+          bubble.classList.remove('streaming');
+          send.disabled = false;
+          return;
+        }
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buf = '';
-
         while (true) {
-          const { done, value } = await reader.read();
+          const {done, value} = await reader.read();
           if (done) break;
-          buf += decoder.decode(value, { stream: true });
+          buf += decoder.decode(value, {stream: true});
           const lines = buf.split('\n');
           buf = lines.pop();
           for (const line of lines) {
             if (!line.startsWith('data: ')) continue;
             const data = JSON.parse(line.slice(6));
             if (data.done) break;
-            if (data.text) bubble.textContent += data.text;
-            messages.scrollTop = messages.scrollHeight;
+            if (data.text) { bubble.textContent += data.text; messages.scrollTop = messages.scrollHeight; }
           }
         }
-      } catch (err) {
+      } catch(err) {
         bubble.textContent = '❌ Ошибка: ' + err.message;
       }
-
       bubble.classList.remove('streaming');
       send.disabled = false;
       input.focus();
@@ -143,8 +224,27 @@ async def index():
     return HTMLResponse(HTML)
 
 
+@app.post("/claude/auth")
+async def auth(request: Request):
+    body = await request.json()
+    # Validate by password
+    if "password" in body:
+        if APP_PASSWORD and hmac.compare_digest(body["password"], APP_PASSWORD):
+            return JSONResponse({"token": _TOKEN})
+        return JSONResponse({"error": "wrong password"}, status_code=401)
+    # Validate by existing token
+    if "token" in body:
+        if _TOKEN and hmac.compare_digest(body["token"], _TOKEN):
+            return JSONResponse({"ok": True})
+        return JSONResponse({"error": "invalid token"}, status_code=401)
+    return JSONResponse({"error": "bad request"}, status_code=400)
+
+
 @app.post("/claude/ask")
 async def ask(request: Request):
+    if not _authorized(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
     body = await request.json()
     prompt = (body.get("prompt") or "").strip()
     if not prompt:
