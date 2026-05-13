@@ -4,8 +4,32 @@ from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
 
 app = FastAPI()
 
-APP_PASSWORD = os.environ.get("APP_PASSWORD", "")
+APP_PASSWORD  = os.environ.get("APP_PASSWORD", "")
+OBSIDIAN_PATH = os.environ.get("OBSIDIAN_PATH", "/home/node/obsidian")
 _TOKEN = hmac.new(b"claude-ui", APP_PASSWORD.encode(), hashlib.sha256).hexdigest() if APP_PASSWORD else ""
+
+
+async def _git_push(env: dict):
+    try:
+        r = await asyncio.create_subprocess_exec(
+            "git", "-C", OBSIDIAN_PATH, "status", "--porcelain",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, env=env,
+        )
+        out, _ = await r.communicate()
+        if not out.strip():
+            return  # nothing changed
+        for cmd in [
+            ["git", "-C", OBSIDIAN_PATH, "add", "-A"],
+            ["git", "-C", OBSIDIAN_PATH, "commit", "-m", "claude: auto-update"],
+            ["git", "-C", OBSIDIAN_PATH, "push"],
+        ]:
+            p = await asyncio.create_subprocess_exec(
+                *cmd, stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL, env=env,
+            )
+            await p.communicate()
+    except Exception:
+        pass
 
 
 def _authorized(request: Request) -> bool:
@@ -263,6 +287,7 @@ async def ask(request: Request):
         return {"error": "empty prompt"}
 
     async def stream():
+        env = {**os.environ, "HOME": "/home/node"}
         proc = await asyncio.create_subprocess_exec(
             "claude", "-p", prompt,
             "--model", model,
@@ -271,7 +296,7 @@ async def ask(request: Request):
             "--output-format", "json",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
-            env={**os.environ, "HOME": "/home/node"},
+            env=env,
         )
         stdout, _ = await proc.communicate()
         try:
@@ -281,6 +306,9 @@ async def ask(request: Request):
             text = stdout.decode("utf-8", errors="replace")
         yield f"data: {json.dumps({'text': text})}\n\n"
         yield f"data: {json.dumps({'done': True})}\n\n"
+
+        # Auto-push to GitHub if anything was written to obsidian
+        asyncio.create_task(_git_push(env))
 
     return StreamingResponse(
         stream(),
