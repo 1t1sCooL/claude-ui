@@ -1,4 +1,4 @@
-import asyncio, json, os, hmac, hashlib
+import asyncio, json, os, hmac, hashlib, shlex
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
 
@@ -39,6 +39,8 @@ HTML = r"""<!DOCTYPE html>
     #header{padding:16px 20px;border-bottom:1px solid #1e1e1e;display:flex;align-items:center;gap:10px;flex-shrink:0}
     #header span{font-size:18px;font-weight:600}
     #header .dot{width:8px;height:8px;border-radius:50%;background:#22c55e}
+    #model{margin-left:auto;background:#1a1a1a;border:1px solid #2a2a2a;color:#aaa;padding:6px 10px;border-radius:8px;font-size:13px;outline:none;cursor:pointer}
+    #model:focus{border-color:#4f46e5}
     #messages{flex:1;overflow-y:auto;padding:20px;display:flex;flex-direction:column;gap:16px}
     .msg{max-width:80%;display:flex;flex-direction:column;gap:4px}
     .msg.user{align-self:flex-end}
@@ -75,6 +77,11 @@ HTML = r"""<!DOCTYPE html>
   <div id="header">
     <div class="dot"></div>
     <span>Claude</span>
+    <select id="model" title="Модель">
+      <option value="claude-sonnet-4-6">Sonnet 4.6</option>
+      <option value="claude-opus-4-7">Opus 4.7</option>
+      <option value="claude-haiku-4-5-20251001">Haiku 4.5</option>
+    </select>
   </div>
   <div id="messages">
     <div class="msg assistant"><div class="bubble">Привет! Чем могу помочь?</div></div>
@@ -178,10 +185,11 @@ HTML = r"""<!DOCTYPE html>
       bubble.classList.add('streaming');
 
       try {
+        const model = document.getElementById('model').value;
         const res = await fetch('/claude/ask', {
           method: 'POST',
           headers: {'Content-Type': 'application/json', 'X-Token': token},
-          body: JSON.stringify({prompt}),
+          body: JSON.stringify({prompt, model}),
         });
         if (res.status === 401) {
           bubble.textContent = '🔒 Сессия истекла, перезагрузи страницу';
@@ -247,12 +255,17 @@ async def ask(request: Request):
 
     body = await request.json()
     prompt = (body.get("prompt") or "").strip()
+    model = (body.get("model") or "claude-sonnet-4-6").strip()
+    allowed_models = {"claude-sonnet-4-6", "claude-opus-4-7", "claude-haiku-4-5-20251001"}
+    if model not in allowed_models:
+        model = "claude-sonnet-4-6"
     if not prompt:
         return {"error": "empty prompt"}
 
     async def stream():
         proc = await asyncio.create_subprocess_exec(
             "claude", "-p", prompt,
+            "--model", model,
             "--dangerously-skip-permissions",
             "--max-turns", "20",
             "--output-format", "json",
