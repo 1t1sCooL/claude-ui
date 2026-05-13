@@ -20,10 +20,10 @@ spec:
             - containerPort: 8080
           env:
             - name: HOME
-              value: /home/claudeuser
+              value: /home/node
           volumeMounts:
             - name: claude-auth
-              mountPath: /home/claudeuser/.claude
+              mountPath: /home/node/.claude
           resources:
             requests:
               memory: "256Mi"
@@ -34,7 +34,7 @@ spec:
       volumes:
         - name: claude-auth
           hostPath:
-            path: /home/claudeuser/.claude
+            path: /home/node/.claude
             type: Directory
       imagePullSecrets:
         - name: ghcr-secret

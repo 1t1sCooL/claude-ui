@@ -8,14 +8,12 @@ RUN npm install -g @anthropic-ai/claude-code
 
 RUN pip3 install fastapi uvicorn --break-system-packages
 
-RUN useradd -m -u 1000 claudeuser
-
 WORKDIR /app
 COPY app.py .
-RUN chown -R claudeuser:claudeuser /app
+RUN chown -R node:node /app
 
-USER claudeuser
-ENV HOME=/home/claudeuser
+USER node
+ENV HOME=/home/node
 EXPOSE 8080
 
 CMD ["python3", "-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080"]
