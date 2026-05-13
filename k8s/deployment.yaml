@@ -26,6 +26,9 @@ spec:
           volumeMounts:
             - name: claude-auth
               mountPath: /home/node/.claude
+            - name: claude-config
+              mountPath: /home/node/.claude.json
+              subPath: .claude.json
           resources:
             requests:
               memory: "256Mi"
@@ -38,5 +41,9 @@ spec:
           hostPath:
             path: /home/node/.claude
             type: Directory
+        - name: claude-config
+          hostPath:
+            path: /home/node/.claude.json
+            type: File
       imagePullSecrets:
         - name: ghcr-secret
