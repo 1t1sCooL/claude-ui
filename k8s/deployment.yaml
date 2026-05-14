@@ -15,6 +15,7 @@ spec:
       labels:
         app: claude-ui
     spec:
+      serviceAccountName: claude-ui-sa
       containers:
         - name: claude-ui
           image: ghcr.io/1t1scool/claude-ui:IMAGE_TAG
@@ -30,11 +31,15 @@ spec:
                 secretKeyRef:
                   name: claude-ui-secret
                   key: password
+            - name: GIT_SSH_COMMAND
+              value: ssh -o StrictHostKeyChecking=no
           volumeMounts:
             - name: claude-auth
               mountPath: /home/node/.claude
             - name: obsidian
               mountPath: /home/node/obsidian
+            - name: ssh-keys
+              mountPath: /home/node/.ssh
           resources:
             requests:
               memory: "256Mi"
@@ -50,6 +55,10 @@ spec:
         - name: obsidian
           hostPath:
             path: /home/node/obsidian
+            type: Directory
+        - name: ssh-keys
+          hostPath:
+            path: /home/node/.ssh
             type: Directory
       imagePullSecrets:
         - name: ghcr-secret
