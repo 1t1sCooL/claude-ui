@@ -567,72 +567,58 @@ async def ask(request: Request):
         env = {**os.environ, "HOME": "/home/node"}
         cmd = ["claude", "-p", prompt, "--model", model,
                "--dangerously-skip-permissions", "--max-turns", "20",
-               "--output-format", "stream-json"]
+               "--output-format", "json"]
         if session_id:
             cmd += ["--resume", session_id]
 
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
             env=env,
         )
 
         final_sid = session_id
         parts: list[str] = []
+        q: asyncio.Queue = asyncio.Queue()
 
-        async for raw in proc.stdout:
-            line = raw.decode("utf-8", errors="replace").strip()
-            if not line:
-                continue
-            try:
-                ev = json.loads(line)
-                etype = ev.get("type", "")
-
-                if etype == "assistant":
-                    for item in ev.get("message", {}).get("content", []):
-                        if item.get("type") == "text":
-                            chunk = item["text"]
-                            if chunk:
-                                parts.append(chunk)
-                                yield f"data: {json.dumps({'text': chunk})}\n\n"
-                        elif item.get("type") == "tool_use":
-                            tl = f"⚡ {item.get('name','')}({json.dumps(item.get('input',{}), ensure_ascii=False, separators=(',',':'))})"
-                            yield f"data: {json.dumps({'terminal': tl})}\n\n"
-
-                elif etype == "user":
-                    for item in ev.get("message", {}).get("content", []):
-                        if not isinstance(item, dict) or item.get("type") != "tool_result":
-                            continue
-                        content = item.get("content", "")
-                        if isinstance(content, str) and content.strip():
-                            preview = content[:400] + ("…" if len(content) > 400 else "")
-                            yield f"data: {json.dumps({'terminal': '← ' + preview})}\n\n"
-                        elif isinstance(content, list):
-                            for c in content:
-                                if isinstance(c, dict) and c.get("type") == "text":
-                                    t = (c.get("text") or "")[:400]
-                                    if t:
-                                        yield f"data: {json.dumps({'terminal': '← ' + t})}\n\n"
-
-                elif etype == "result":
-                    sid = ev.get("session_id", "")
-                    if sid:
-                        final_sid = sid
-                        yield f"data: {json.dumps({'session_id': sid})}\n\n"
-                    if not parts:
-                        fallback = ev.get("result", "")
-                        if fallback:
-                            parts.append(fallback)
-                            yield f"data: {json.dumps({'text': fallback})}\n\n"
-
-                else:
-                    raw_str = json.dumps(ev, ensure_ascii=False)
-                    yield f"data: {json.dumps({'terminal': raw_str})}\n\n"
-
-            except json.JSONDecodeError:
+        async def _stderr_reader():
+            async for raw in proc.stderr:
+                line = raw.decode("utf-8", errors="replace").strip()
                 if line:
-                    yield f"data: {json.dumps({'terminal': line})}\n\n"
+                    await q.put(("t", line))
+            await q.put(("t_done", ""))
+
+        async def _stdout_reader():
+            data = await proc.stdout.read()
+            await q.put(("out", data.decode("utf-8", errors="replace")))
+
+        asyncio.create_task(_stderr_reader())
+        asyncio.create_task(_stdout_reader())
+
+        t_done = False
+        out_done = False
+        while not (t_done and out_done):
+            kind, val = await q.get()
+            if kind == "t":
+                yield f"data: {json.dumps({'terminal': val})}\n\n"
+            elif kind == "t_done":
+                t_done = True
+            elif kind == "out":
+                out_done = True
+                try:
+                    data = json.loads(val)
+                    text = data.get("result", "")
+                    sid  = data.get("session_id", "")
+                except Exception:
+                    text = val
+                    sid  = ""
+                if sid:
+                    final_sid = sid
+                    yield f"data: {json.dumps({'session_id': sid})}\n\n"
+                if text:
+                    parts.append(text)
+                    yield f"data: {json.dumps({'text': text})}\n\n"
 
         await proc.wait()
         yield f"data: {json.dumps({'done': True})}\n\n"
