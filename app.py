@@ -112,10 +112,14 @@ HTML = r"""<!DOCTYPE html>
     .auth-card .err{color:#f87171;font-size:13px;text-align:center;min-height:18px}
 
     /* Sidebar */
-    #sidebar{width:260px;flex-shrink:0;background:#111;border-right:1px solid #1e1e1e;display:flex;flex-direction:column;overflow:hidden}
-    #sidebar-header{padding:14px;border-bottom:1px solid #1e1e1e}
-    #new-chat-btn{width:100%;background:#4f46e5;color:#fff;border:none;padding:10px 14px;border-radius:10px;font-size:13px;font-weight:600;cursor:pointer;transition:background .15s}
+    #sidebar{width:260px;flex-shrink:0;background:#111;border-right:1px solid #1e1e1e;display:flex;flex-direction:column;overflow:hidden;transition:width .18s ease}
+    #sidebar-header{padding:14px;border-bottom:1px solid #1e1e1e;display:flex;align-items:center;gap:8px}
+    #new-chat-btn{flex:1;display:flex;align-items:center;justify-content:center;gap:6px;background:#4f46e5;color:#fff;border:none;padding:10px 14px;border-radius:10px;font-size:13px;font-weight:600;cursor:pointer;transition:background .15s}
     #new-chat-btn:hover{background:#4338ca}
+    #new-chat-btn .icon{font-size:14px;line-height:1}
+    #sidebar-toggle{width:32px;height:32px;flex-shrink:0;background:#1a1a1a;border:1px solid #2a2a2a;color:#aaa;border-radius:8px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:background .15s,color .15s}
+    #sidebar-toggle:hover{background:#222;color:#fff}
+    #sidebar-toggle svg{width:14px;height:14px;transition:transform .18s ease}
     #session-list{flex:1;overflow-y:auto;padding:6px}
     .session-item{display:flex;align-items:center;gap:6px;padding:9px 10px;border-radius:9px;cursor:pointer;transition:background .15s;margin-bottom:2px}
     .session-item:hover{background:#1a1a1a}
@@ -125,6 +129,15 @@ HTML = r"""<!DOCTYPE html>
     .session-date{font-size:10px;color:#555;margin-top:2px}
     .session-del{background:none;border:none;color:#3a3a3a;cursor:pointer;padding:2px 6px;border-radius:4px;font-size:16px;flex-shrink:0;line-height:1;transition:color .15s}
     .session-del:hover{color:#f87171}
+
+    /* Sidebar collapsed state */
+    #sidebar.collapsed{width:56px}
+    #sidebar.collapsed #sidebar-header{padding:10px 6px;flex-direction:column;gap:6px}
+    #sidebar.collapsed #new-chat-btn{flex:none;width:36px;height:36px;padding:0}
+    #sidebar.collapsed #new-chat-btn .label{display:none}
+    #sidebar.collapsed #new-chat-btn .icon{font-size:18px}
+    #sidebar.collapsed #sidebar-toggle svg{transform:rotate(180deg)}
+    #sidebar.collapsed #session-list{display:none}
 
     /* Main */
     #main{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0}
@@ -182,7 +195,12 @@ HTML = r"""<!DOCTYPE html>
 
   <div id="sidebar">
     <div id="sidebar-header">
-      <button id="new-chat-btn">+ Новый чат</button>
+      <button id="new-chat-btn" title="Новый чат">
+        <span class="icon">+</span><span class="label">Новый чат</span>
+      </button>
+      <button id="sidebar-toggle" aria-label="Свернуть боковую панель" aria-expanded="true" title="Свернуть (Ctrl/Cmd+B)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
+      </button>
     </div>
     <div id="session-list"></div>
   </div>
@@ -223,6 +241,7 @@ HTML = r"""<!DOCTYPE html>
   <script>
     const TOKEN_KEY   = 'claude_token';
     const SESSION_KEY = 'claude_session_id';
+    const SIDEBAR_KEY = 'claude_sidebar_collapsed';
     let token     = localStorage.getItem(TOKEN_KEY) || '';
     let sessionId = localStorage.getItem(SESSION_KEY) || '';
 
@@ -237,6 +256,33 @@ HTML = r"""<!DOCTYPE html>
     const termBody = document.getElementById('term-body');
     const termLbl  = document.getElementById('term-label');
     const termArrow= document.getElementById('term-arrow');
+    const sidebar  = document.getElementById('sidebar');
+    const sidebarToggle = document.getElementById('sidebar-toggle');
+
+    // ── Sidebar collapse ───────────────────────────────
+    function applySidebarState(collapsed) {
+      sidebar.classList.toggle('collapsed', collapsed);
+      sidebarToggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+      sidebarToggle.setAttribute('aria-label', collapsed ? 'Развернуть боковую панель' : 'Свернуть боковую панель');
+      sidebarToggle.title = collapsed ? 'Развернуть (Ctrl/Cmd+B)' : 'Свернуть (Ctrl/Cmd+B)';
+    }
+
+    function toggleSidebar() {
+      const collapsed = !sidebar.classList.contains('collapsed');
+      applySidebarState(collapsed);
+      localStorage.setItem(SIDEBAR_KEY, collapsed ? '1' : '0');
+      console.debug('[sidebar] toggled', collapsed);
+    }
+
+    applySidebarState(localStorage.getItem(SIDEBAR_KEY) === '1');
+    sidebarToggle.addEventListener('click', toggleSidebar);
+    window.addEventListener('keydown', e => {
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'b') {
+        if (!authEl.classList.contains('hidden')) return;
+        e.preventDefault();
+        toggleSidebar();
+      }
+    });
 
     // ── Terminal panel ─────────────────────────────────
     document.getElementById('term-header').addEventListener('click', () => {
@@ -277,6 +323,7 @@ HTML = r"""<!DOCTYPE html>
         const item = document.createElement('div');
         item.className = 'session-item' + (s.session_id === sessionId ? ' active' : '');
         item.dataset.sid = s.session_id;
+        item.title = s.title || 'Без названия';
 
         const info = document.createElement('div');
         info.className = 'session-info';
