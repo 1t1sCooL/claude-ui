@@ -60,7 +60,7 @@ Relevant anchors in `app.py`:
 
 ### Phase 2 — Documentation
 
-5. **Write `README.md`** (new file at repo root)
+5. ✅ **Write `README.md`** (new file at repo root)
    - What it is — FastAPI wrapper around `claude` CLI, single-page chat UI at `/claude`
    - Stack: Python 3 + FastAPI + Uvicorn, vanilla HTML/CSS/JS in `app.py`, calls `@anthropic-ai/claude-code` CLI, optional git auto-push of an Obsidian vault
    - Env vars: `APP_PASSWORD` (required), `OBSIDIAN_PATH` (default `/home/node/obsidian`), `SESSIONS_FILE` (default `/home/node/sessions.json`), plus `claude` CLI vars (`ANTHROPIC_API_KEY`, etc.)
