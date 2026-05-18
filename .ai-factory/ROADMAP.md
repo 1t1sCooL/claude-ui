@@ -26,18 +26,32 @@
 - [x] **Stop Generation** — Cancel a running request mid-stream; Stop button replaces Send while streaming, backend terminates the subprocess
 - [x] **Message Retry & Edit** — Regenerate assistant response with one click; edit a sent user message and rerun from that point
 - [x] **Paste Images from Clipboard** — Ctrl+V in the composer pastes screenshots directly as attachments (extends existing drag-and-drop)
+- [ ] **Prompt Templates** — Save frequently used prompts as reusable templates; one-click insert into composer with a dedicated picker
+- [ ] **Git Panel** — Sidebar panel showing `git status`/`diff` of the workspace; commit, stage, and view log without going through chat
+- [ ] **Context Window Indicator** — Progress bar showing how much of the session context window is consumed
+- [ ] **MCP Servers Panel** — View installed MCP servers, their available tools, enable/disable them, and inspect tool schemas
 
 ### 🟡 Medium Priority
 
 - [x] **Full-Text Session Search** — Search message content across all sessions, not just session titles
 - [x] **Tool Use Progress Cards** — Show inline "⚡ Using tool: bash" cards in chat while Claude is executing tools, not just in the terminal panel
 - [x] **Workspace ZIP Export** — Download the entire `/home/node/workspace` as a zip archive with one button click
+- [ ] **Session Folders & Tags** — Organise sessions into folders or attach tags; filter sidebar by tag
+- [ ] **Pinned Sessions** — Pin important sessions to the top of the sidebar list, persisted across reloads
+- [ ] **Webhook Notifications** — Notify an external endpoint (Telegram bot, Slack, email) when a long-running task completes
+- [ ] **Voice Input** — Speech-to-text in the composer via the Web Speech API; push-to-talk button next to the input field
+- [ ] **Session Import** — Import sessions from previously exported JSON files to restore history (complements existing export)
+- [ ] **Split View** — Display two sessions side by side for comparison or parallel work
 
 ### 🟢 Nice to Have
 
 - [x] **Keyboard Shortcuts** — Ctrl+K new chat, Ctrl+/ skills browser, arrow keys to navigate session list
 - [x] **Auto-Scroll Toggle** — Pin/unpin scroll so you can read the beginning of a long response while it's still streaming
 - [x] **Message Full-Text Export** — Export a single session as JSON (in addition to existing markdown export)
+- [ ] **Custom System Prompt** — Set a per-session or global system prompt from the UI without editing files
+- [ ] **TTS Output** — Text-to-speech playback of assistant responses via the Web Speech API
+- [ ] **Session Sharing** — Generate a read-only shareable link to a session for others to view
+- [ ] **API Access** — Expose a simple REST/WebSocket endpoint so external tools can send tasks to the same running instance
 
 ## Completed
 
