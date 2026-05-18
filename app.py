@@ -126,6 +126,10 @@ HTML = r"""<!DOCTYPE html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Claude</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/marked@13/marked.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js" defer></script>
   <style>
     *{box-sizing:border-box;margin:0;padding:0}
     html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0f0f0f;color:#e5e5e5}
@@ -233,6 +237,28 @@ HTML = r"""<!DOCTYPE html>
 
     /* Drag-over highlight */
     body.drag-over #messages{outline:2px dashed #4f46e5;outline-offset:-4px}
+
+    /* Markdown rendering */
+    .bubble.rendered{white-space:normal}
+    .bubble.rendered p{margin:0 0 8px}.bubble.rendered p:last-child{margin-bottom:0}
+    .bubble.rendered h1,.bubble.rendered h2,.bubble.rendered h3,.bubble.rendered h4{margin:12px 0 6px;font-weight:700;line-height:1.3}
+    .bubble.rendered h1{font-size:1.3em}.bubble.rendered h2{font-size:1.15em}.bubble.rendered h3{font-size:1.05em}
+    .bubble.rendered ul,.bubble.rendered ol{margin:4px 0 8px 18px;padding:0}
+    .bubble.rendered li{margin:2px 0}
+    .bubble.rendered code:not(pre code){background:#2d2d2d;border-radius:4px;padding:1px 5px;font-family:'Menlo','Monaco','Courier New',monospace;font-size:.88em;color:#e2e8f0}
+    .bubble.rendered pre{position:relative;margin:8px 0;border-radius:8px;overflow:hidden}
+    .bubble.rendered pre code{display:block;overflow-x:auto;padding:12px 14px;font-size:12px;line-height:1.5;background:#0d1117}
+    .bubble.rendered blockquote{border-left:3px solid #4f46e5;margin:8px 0;padding:4px 12px;color:#aaa}
+    .bubble.rendered table{border-collapse:collapse;margin:8px 0;width:100%;font-size:13px}
+    .bubble.rendered th,.bubble.rendered td{border:1px solid #2a2a2a;padding:5px 10px;text-align:left}
+    .bubble.rendered th{background:#1e1e1e;font-weight:600}
+    .bubble.rendered a{color:#818cf8;text-decoration:none}.bubble.rendered a:hover{text-decoration:underline}
+    .bubble.rendered hr{border:none;border-top:1px solid #2a2a2a;margin:10px 0}
+    .copy-btn{position:absolute;top:6px;right:6px;background:#2a2a2a;border:1px solid #3a3a3a;color:#aaa;border-radius:5px;padding:2px 8px;font-size:11px;cursor:pointer;opacity:0;transition:opacity .15s,color .15s,border-color .15s}
+    .bubble.rendered pre:hover .copy-btn{opacity:1}
+    .copy-btn.copied{color:#6ee7b7;border-color:#6ee7b7}
+    .mermaid-block{background:#111;border-radius:8px;padding:10px;margin:8px 0;overflow-x:auto;text-align:center}
+    .mermaid-block svg{max-width:100%;height:auto}
   </style>
 </head>
 <body>
@@ -297,6 +323,100 @@ HTML = r"""<!DOCTYPE html>
   </div>
 
   <script>
+    // ── Markdown rendering ─────────────────────────────
+    function initMarkdown() {
+      if (typeof marked === 'undefined') {
+        console.debug('[md] marked not loaded, markdown disabled');
+        return;
+      }
+      const renderer = new marked.Renderer();
+      const origCode = renderer.code.bind(renderer);
+      renderer.code = function(token) {
+        const code = typeof token === 'object' ? token.text : token;
+        const lang = typeof token === 'object' ? token.lang : arguments[1];
+        if (lang === 'mermaid') {
+          return `<div class="mermaid-block">${code}</div>`;
+        }
+        if (lang && typeof hljs !== 'undefined' && hljs.getLanguage(lang)) {
+          const highlighted = hljs.highlight(code, {language: lang, ignoreIllegals: true}).value;
+          return `<pre><code class="hljs language-${lang}">${highlighted}</code></pre>`;
+        }
+        const highlighted = typeof hljs !== 'undefined' ? hljs.highlightAuto(code).value : code.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        return `<pre><code class="hljs">${highlighted}</code></pre>`;
+      };
+      marked.use({ renderer, breaks: true, gfm: true });
+      if (typeof mermaid !== 'undefined') {
+        mermaid.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'loose' });
+      }
+      console.debug('[md] markdown renderer initialized');
+    }
+    document.addEventListener('DOMContentLoaded', initMarkdown);
+
+    function renderMarkdown(text) {
+      if (typeof marked === 'undefined') return text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      try {
+        const html = marked.parse(text);
+        console.debug('[md] rendered', text.length, '→', html.length, 'chars');
+        return html;
+      } catch(e) {
+        console.debug('[md] render error', e.message, '— falling back to plain text');
+        return text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      }
+    }
+
+    function injectCopyButtons(container) {
+      container.querySelectorAll('pre').forEach(pre => {
+        if (pre.querySelector('.copy-btn')) return;
+        const code = pre.querySelector('code');
+        if (!code) return;
+        const btn = document.createElement('button');
+        btn.className = 'copy-btn';
+        btn.textContent = 'Copy';
+        btn.addEventListener('click', async () => {
+          try {
+            await navigator.clipboard.writeText(code.textContent);
+            btn.textContent = '✓ Copied';
+            btn.classList.add('copied');
+            setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 2000);
+            console.debug('[md] code copied', code.textContent.length, 'chars');
+          } catch(e) {
+            btn.textContent = 'Error';
+            console.debug('[md] clipboard error', e.message);
+          }
+        });
+        pre.appendChild(btn);
+      });
+    }
+
+    async function applyMermaid(container) {
+      if (typeof mermaid === 'undefined') return;
+      const blocks = container.querySelectorAll('.mermaid-block');
+      if (!blocks.length) return;
+      console.debug('[md] rendering', blocks.length, 'mermaid diagram(s)');
+      for (const block of blocks) {
+        try {
+          const id = 'mermaid-' + Math.random().toString(36).slice(2);
+          const src = block.textContent.trim();
+          const { svg } = await mermaid.render(id, src);
+          block.innerHTML = svg;
+        } catch(e) {
+          console.debug('[md] mermaid error', e.message);
+          block.style.color = '#f87171';
+          block.textContent = 'Diagram error: ' + e.message;
+        }
+      }
+    }
+
+    function applyMarkdown(bubble, rawText) {
+      if (!rawText) return;
+      bubble.innerHTML = renderMarkdown(rawText);
+      bubble.classList.add('rendered');
+      injectCopyButtons(bubble);
+      applyMermaid(bubble);
+      console.debug('[md] applyMarkdown done', rawText.length, 'chars');
+    }
+
+    // ── App state ──────────────────────────────────────
     const TOKEN_KEY   = 'claude_token';
     const SESSION_KEY = 'claude_session_id';
     const SIDEBAR_KEY = 'claude_sidebar_collapsed';
@@ -539,7 +659,12 @@ HTML = r"""<!DOCTYPE html>
       }
       const b = document.createElement('div');
       b.className = 'bubble';
-      b.textContent = text;
+      if (role === 'assistant' && text) {
+        applyMarkdown(b, text);
+        console.debug('[md] addMsg rendered', text.length, 'chars');
+      } else {
+        b.textContent = text;
+      }
       div.appendChild(b);
       messages.appendChild(div);
       messages.scrollTop = messages.scrollHeight;
@@ -678,6 +803,7 @@ HTML = r"""<!DOCTYPE html>
         const dec = new TextDecoder();
         let buf = '';
         let streamDone = false;
+        let rawText = '';
 
         try {
           while (!streamDone) {
@@ -698,6 +824,7 @@ HTML = r"""<!DOCTYPE html>
                 }
                 if (data.text) {
                   console.debug('[stream] delta', data.text.length, 'chars');
+                  rawText += data.text;
                   bubble.textContent += data.text;
                   messages.scrollTop = messages.scrollHeight;
                 }
@@ -711,6 +838,10 @@ HTML = r"""<!DOCTYPE html>
           }
         } finally {
           bubble.classList.remove('streaming');
+          if (rawText) {
+            applyMarkdown(bubble, rawText);
+            console.debug('[md] post-stream render applied');
+          }
         }
       } catch(err) {
         bubble.textContent = '❌ Ошибка: ' + err.message;
