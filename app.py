@@ -22,6 +22,8 @@ MAX_UPLOAD_BYTES = 20 * 1024 * 1024  # 20 MB
 _CACHE_TTL = 30  # seconds — commands/skills cache TTL
 _commands_cache: tuple = ([], 0.0)
 _skills_cache: tuple    = ([], 0.0)
+# Active subprocess registry: stream_id → asyncio.subprocess.Process
+_active_streams: dict = {}
 
 
 def _parse_skill_frontmatter(text: str) -> dict:
@@ -495,6 +497,10 @@ HTML = r"""<!DOCTYPE html>
     #send:active{transform:scale(.97)}
     #send:disabled{opacity:.4;cursor:not-allowed;transform:none;box-shadow:none}
     #send svg{width:20px;height:20px;fill:none;stroke:#fff;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+    #stop-btn{background:#dc2626;border:none;color:#fff;width:44px;height:44px;border-radius:12px;cursor:pointer;flex-shrink:0;display:none;align-items:center;justify-content:center;transition:background .15s,transform .1s}
+    #stop-btn.visible{display:flex}
+    #stop-btn:hover{background:#b91c1c;transform:scale(1.05)}
+    #stop-btn svg{width:16px;height:16px;fill:#fff}
 
     /* Attachments */
     #attach-btn{background:var(--bg3);border:1px solid var(--border2);color:var(--text3);width:44px;height:44px;border-radius:12px;cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center;transition:background .15s,color .15s}
@@ -746,6 +752,9 @@ HTML = r"""<!DOCTYPE html>
         <textarea id="input" rows="1" placeholder="Напиши сообщение..."></textarea>
         <button id="send" type="submit">
           <svg viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+        </button>
+        <button id="stop-btn" type="button" title="Остановить генерацию">
+          <svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
         </button>
       </form>
     </div>
@@ -1899,6 +1908,32 @@ HTML = r"""<!DOCTYPE html>
     });
 
     // ── Chat ───────────────────────────────────────────
+    const stopBtn = document.getElementById('stop-btn');
+    let activeStreamId = null;
+    let activeReader = null;
+
+    function setStreaming(active) {
+      send.disabled = active;
+      stopBtn.classList.toggle('visible', active);
+      console.debug('[stream] streaming state:', active);
+    }
+
+    stopBtn.addEventListener('click', async () => {
+      console.debug('[stop] requested, stream_id=', activeStreamId);
+      if (activeReader) { try { activeReader.cancel(); } catch(_) {} }
+      if (activeStreamId) {
+        try {
+          await fetch('/claude/stop', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json', 'X-Token': token},
+            body: JSON.stringify({stream_id: activeStreamId}),
+          });
+        } catch(_) {}
+        activeStreamId = null;
+      }
+      setStreaming(false);
+    });
+
     form.addEventListener('submit', async e => {
       e.preventDefault();
       const prompt = input.value.trim();
@@ -1910,7 +1945,7 @@ HTML = r"""<!DOCTYPE html>
       clearAttachments();
       input.value = '';
       input.style.height = 'auto';
-      send.disabled = true;
+      setStreaming(true);
       termClear();
 
       const bubble = addMsg('assistant', '');
@@ -1931,11 +1966,12 @@ HTML = r"""<!DOCTYPE html>
         if (res.status === 401) {
           bubble.textContent = '🔒 Сессия истекла, перезагрузи страницу';
           bubble.classList.remove('streaming');
-          send.disabled = false;
+          setStreaming(false);
           return;
         }
 
         const reader = res.body.getReader();
+        activeReader = reader;
         const dec = new TextDecoder();
         let buf = '';
         let streamDone = false;
@@ -1953,13 +1989,16 @@ HTML = r"""<!DOCTYPE html>
               try {
                 const data = JSON.parse(line.slice(6));
                 if (data.done) { streamDone = true; break; }
+                if (data.stream_id) {
+                  activeStreamId = data.stream_id;
+                  console.debug('[stream] got stream_id', data.stream_id);
+                }
                 if (data.session_id) {
                   console.debug('[stream] got session_id', data.session_id);
                   sessionId = data.session_id;
                   localStorage.setItem(SESSION_KEY, sessionId);
                 }
                 if (data.text) {
-                  console.debug('[stream] delta', data.text.length, 'chars');
                   rawText += data.text;
                   bubble.textContent += data.text;
                   messages.scrollTop = messages.scrollHeight;
@@ -1970,7 +2009,6 @@ HTML = r"""<!DOCTYPE html>
                   termAppend(data.terminal, cls);
                 }
                 if (data.output_files && data.output_files.length) {
-                  console.debug('[stream] output_files', data.output_files.length);
                   renderOutputFiles(bubble.parentElement, data.output_files);
                 }
               } catch(_) {}
@@ -1980,16 +2018,21 @@ HTML = r"""<!DOCTYPE html>
           bubble.classList.remove('streaming');
           if (rawText) {
             applyMarkdown(bubble, rawText);
-            console.debug('[md] post-stream render applied');
           }
+          activeReader = null;
+          activeStreamId = null;
         }
       } catch(err) {
-        bubble.textContent = '❌ Ошибка: ' + err.message;
-        bubble.classList.remove('streaming');
-        showToast('Ошибка запроса: ' + err.message, 'error');
+        if (err.name !== 'AbortError') {
+          bubble.textContent = '❌ Ошибка: ' + err.message;
+          bubble.classList.remove('streaming');
+          showToast('Ошибка запроса: ' + err.message, 'error');
+        }
+        activeReader = null;
+        activeStreamId = null;
       }
 
-      send.disabled = false;
+      setStreaming(false);
       input.focus();
       await loadSessions();
     });
@@ -2015,6 +2058,26 @@ async def health(request: Request):
         "commands_dir_exists": COMMANDS_DIR.exists(),
         "skills_dirs": [str(d) for d in SKILLS_DIRS if d.exists()],
     })
+
+
+@app.post("/claude/stop")
+async def stop_stream(request: Request):
+    if not _authorized(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    body = await request.json()
+    stream_id = (body.get("stream_id") or "").strip()
+    if not stream_id:
+        return JSONResponse({"error": "missing stream_id"}, status_code=400)
+    proc = _active_streams.get(stream_id)
+    if proc is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    try:
+        proc.terminate()
+        print(f"[INFO stop] terminated stream {stream_id}", flush=True)
+    except Exception as e:
+        print(f"[WARN stop] terminate failed for {stream_id}: {e}", flush=True)
+    _active_streams.pop(stream_id, None)
+    return JSONResponse({"stopped": stream_id})
 
 
 @app.get("/claude")
@@ -2379,6 +2442,11 @@ async def _anthropic_stream(prompt: str, augmented: str, image_attachments: list
     await proc.stdin.drain()
     proc.stdin.close()
 
+    stream_id = uuid.uuid4().hex[:16]
+    _active_streams[stream_id] = proc
+    yield f"data: {json.dumps({'stream_id': stream_id})}\n\n"
+    print(f"[DEBUG multimodal] registered stream_id={stream_id}", flush=True)
+
     final_sid = session_id
     parts: list[str] = []
     result_text: str | None = None  # type: ignore[assignment]
@@ -2462,6 +2530,7 @@ async def _anthropic_stream(prompt: str, augmented: str, image_attachments: list
     assistant_text = (("[ERROR] " if is_error else "") + result_text) if result_text is not None else "".join(parts)
     if not final_sid:
         final_sid = f"img-{uuid.uuid4().hex[:12]}"
+    _active_streams.pop(stream_id, None)
     _upsert_session(final_sid, prompt, assistant_text, attachments=attachments, output_files=output_files or None)
     print(f"[INFO multimodal] session saved sid={final_sid} text_len={len(assistant_text)}", flush=True)
 
@@ -2510,6 +2579,11 @@ async def ask(request: Request):
             stderr=asyncio.subprocess.PIPE,
             env=env,
         )
+
+        stream_id = uuid.uuid4().hex[:16]
+        _active_streams[stream_id] = proc
+        yield f"data: {json.dumps({'stream_id': stream_id})}\n\n"
+        print(f"[DEBUG stream] registered stream_id={stream_id}", flush=True)
 
         final_sid = session_id
         parts: list[str] = []
@@ -2612,6 +2686,7 @@ async def ask(request: Request):
             _upsert_session(final_sid, prompt, assistant_text, attachments=attachments,
                             output_files=output_files or None)
             print(f"[INFO stream] session saved sid={final_sid} text_len={len(assistant_text)} is_error={is_error} attachments={len(attachments)}", flush=True)
+        _active_streams.pop(stream_id, None)
         asyncio.create_task(_git_push(env))
 
     if image_attachments:
