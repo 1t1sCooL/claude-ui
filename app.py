@@ -505,39 +505,46 @@ HTML = r"""<!DOCTYPE html>
         const reader = res.body.getReader();
         const dec = new TextDecoder();
         let buf = '';
+        let streamDone = false;
 
-        while (true) {
-          const {done, value} = await reader.read();
-          if (done) break;
-          buf += dec.decode(value, {stream: true});
-          const lines = buf.split('\n');
-          buf = lines.pop();
-          for (const line of lines) {
-            if (!line.startsWith('data: ')) continue;
-            try {
-              const data = JSON.parse(line.slice(6));
-              if (data.done) break;
-              if (data.session_id) {
-                sessionId = data.session_id;
-                localStorage.setItem(SESSION_KEY, sessionId);
-              }
-              if (data.text) {
-                bubble.textContent += data.text;
-                messages.scrollTop = messages.scrollHeight;
-              }
-              if (data.terminal) {
-                const cls = data.terminal.startsWith('⚡') ? 'tool'
-                          : data.terminal.startsWith('←') ? 'result' : 'other';
-                termAppend(data.terminal, cls);
-              }
-            } catch(_) {}
+        try {
+          while (!streamDone) {
+            const {done, value} = await reader.read();
+            if (done) break;
+            buf += dec.decode(value, {stream: true});
+            const lines = buf.split('\n');
+            buf = lines.pop();
+            for (const line of lines) {
+              if (!line.startsWith('data: ')) continue;
+              try {
+                const data = JSON.parse(line.slice(6));
+                if (data.done) { streamDone = true; break; }
+                if (data.session_id) {
+                  console.debug('[stream] got session_id', data.session_id);
+                  sessionId = data.session_id;
+                  localStorage.setItem(SESSION_KEY, sessionId);
+                }
+                if (data.text) {
+                  console.debug('[stream] delta', data.text.length, 'chars');
+                  bubble.textContent += data.text;
+                  messages.scrollTop = messages.scrollHeight;
+                }
+                if (data.terminal) {
+                  const cls = data.terminal.startsWith('⚡') ? 'tool'
+                            : data.terminal.startsWith('←') ? 'result' : 'other';
+                  termAppend(data.terminal, cls);
+                }
+              } catch(_) {}
+            }
           }
+        } finally {
+          bubble.classList.remove('streaming');
         }
       } catch(err) {
         bubble.textContent = '❌ Ошибка: ' + err.message;
+        bubble.classList.remove('streaming');
       }
 
-      bubble.classList.remove('streaming');
       send.disabled = false;
       input.focus();
       await loadSessions();
@@ -614,7 +621,7 @@ async def ask(request: Request):
         env = {**os.environ, "HOME": "/home/node"}
         cmd = ["claude", "-p", prompt, "--model", model,
                "--dangerously-skip-permissions", "--max-turns", "20",
-               "--output-format", "json"]
+               "--output-format", "stream-json"]
         if session_id:
             cmd += ["--resume", session_id]
 
@@ -627,6 +634,8 @@ async def ask(request: Request):
 
         final_sid = session_id
         parts: list[str] = []
+        result_text: str | None = None
+        is_error: bool = False
         q: asyncio.Queue = asyncio.Queue()
 
         async def _stderr_reader():
@@ -636,12 +645,45 @@ async def ask(request: Request):
                     await q.put(("t", line))
             await q.put(("t_done", ""))
 
-        async def _stdout_reader():
-            data = await proc.stdout.read()
-            await q.put(("out", data.decode("utf-8", errors="replace")))
+        async def _stdout_line_reader():
+            prev_len = 0
+            async for raw in proc.stdout:
+                line = raw.decode("utf-8", errors="replace").strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except Exception:
+                    print(f"[DEBUG stream] stdout line unparseable: {line[:80]}", flush=True)
+                    continue
+                etype = event.get("type", "")
+                print(f"[DEBUG stream] event type={etype}", flush=True)
+                if etype == "system":
+                    sid = event.get("session_id", "")
+                    if sid:
+                        await q.put(("sid", sid))
+                elif etype == "assistant":
+                    msg = event.get("message", {})
+                    content = msg.get("content", [])
+                    full_text = ""
+                    for c in content:
+                        if isinstance(c, dict) and c.get("type") == "text":
+                            full_text = c.get("text", "")
+                    delta = full_text[prev_len:]
+                    if delta:
+                        print(f"[DEBUG stream] delta len={len(delta)}", flush=True)
+                        await q.put(("delta", delta))
+                        prev_len = len(full_text)
+                elif etype == "result":
+                    await q.put(("result", {
+                        "text":     event.get("result", ""),
+                        "sid":      event.get("session_id", ""),
+                        "is_error": event.get("is_error", False),
+                    }))
+            await q.put(("out_done", ""))
 
         asyncio.create_task(_stderr_reader())
-        asyncio.create_task(_stdout_reader())
+        asyncio.create_task(_stdout_line_reader())
 
         t_done = False
         out_done = False
@@ -651,27 +693,32 @@ async def ask(request: Request):
                 yield f"data: {json.dumps({'terminal': val})}\n\n"
             elif kind == "t_done":
                 t_done = True
-            elif kind == "out":
+            elif kind == "sid":
+                final_sid = val
+                yield f"data: {json.dumps({'session_id': val})}\n\n"
+            elif kind == "delta":
+                parts.append(val)
+                yield f"data: {json.dumps({'text': val})}\n\n"
+            elif kind == "result":
+                result_text = val["text"]
+                is_error = val.get("is_error", False)
+                if val["sid"] and not final_sid:
+                    final_sid = val["sid"]
+                    yield f"data: {json.dumps({'session_id': val['sid']})}\n\n"
+            elif kind == "out_done":
                 out_done = True
-                try:
-                    data = json.loads(val)
-                    text = data.get("result", "")
-                    sid  = data.get("session_id", "")
-                except Exception:
-                    text = val
-                    sid  = ""
-                if sid:
-                    final_sid = sid
-                    yield f"data: {json.dumps({'session_id': sid})}\n\n"
-                if text:
-                    parts.append(text)
-                    yield f"data: {json.dumps({'text': text})}\n\n"
 
         await proc.wait()
         yield f"data: {json.dumps({'done': True})}\n\n"
 
+        if result_text is not None:
+            assistant_text = ("[ERROR] " if is_error else "") + result_text
+        else:
+            assistant_text = "".join(parts)
+
         if final_sid:
-            _upsert_session(final_sid, prompt, "".join(parts))
+            _upsert_session(final_sid, prompt, assistant_text)
+            print(f"[INFO stream] session saved sid={final_sid} text_len={len(assistant_text)} is_error={is_error}", flush=True)
         asyncio.create_task(_git_push(env))
 
     return StreamingResponse(
