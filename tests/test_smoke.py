@@ -22,22 +22,22 @@ def auth():
 
 
 class TestHealthEndpoint(unittest.TestCase):
-    def test_health_returns_200(self):
-        r = client().get("/claude/health")
+    def test_health_authenticated_returns_200(self):
+        r = client().get("/claude/health", headers=auth())
         self.assertEqual(r.status_code, 200)
 
+    def test_health_unauthenticated_returns_401(self):
+        r = client().get("/claude/health", headers={"X-Token": "bad"})
+        self.assertEqual(r.status_code, 401)
+
     def test_health_has_status_ok(self):
-        data = client().get("/claude/health").json()
+        data = client().get("/claude/health", headers=auth()).json()
         self.assertEqual(data["status"], "ok")
 
     def test_health_has_sessions_field(self):
-        data = client().get("/claude/health").json()
+        data = client().get("/claude/health", headers=auth()).json()
         self.assertIn("sessions", data)
         self.assertIn("total", data["sessions"])
-
-    def test_health_no_auth_required(self):
-        r = client().get("/claude/health")
-        self.assertNotEqual(r.status_code, 401)
 
 
 class TestIndexPage(unittest.TestCase):
