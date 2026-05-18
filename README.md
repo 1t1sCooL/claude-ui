@@ -10,7 +10,7 @@ A tiny FastAPI wrapper around the `claude` CLI that exposes a single-page chat U
 - **Persistence:** plain JSON file (`SESSIONS_FILE`), one document holds every session
 - **Optional:** git auto-push of `OBSIDIAN_PATH` after each successful reply
 
-The whole project is one file (`app.py`, ~640 lines) plus a `Dockerfile` and three k8s manifests under `k8s/`.
+The whole project is one file (`app.py`, ~700 lines) plus a `Dockerfile`, three k8s manifests under `k8s/`, and a `tests/` suite.
 
 ## Features
 
@@ -18,6 +18,7 @@ The whole project is one file (`app.py`, ~640 lines) plus a `Dockerfile` and thr
 - Session list with delete, persistent across reloads, tooltip on hover
 - **Collapsible sidebar** — click the chevron in the header or hit `Ctrl/Cmd + B`; collapsed state is remembered in `localStorage` (`claude_sidebar_collapsed`)
 - Model picker — Sonnet 4.6, Opus 4.7, Haiku 4.5
+- **Token-by-token streaming** — assistant replies appear word-by-word as Claude generates them (uses `--output-format stream-json`)
 - Live terminal panel showing `claude` CLI stderr (collapsible)
 - Dark theme
 
@@ -30,7 +31,7 @@ The whole project is one file (`app.py`, ~640 lines) plus a `Dockerfile` and thr
 | GET    | `/claude/sessions` | List sessions (metadata only) |
 | GET    | `/claude/sessions/{id}` | Get full session with messages |
 | DELETE | `/claude/sessions/{id}` | Delete a session |
-| POST   | `/claude/ask` | Send a prompt; returns an SSE stream of `text`, `terminal`, `session_id`, `done` events |
+| POST   | `/claude/ask` | Send a prompt; returns an SSE stream of `text` (streaming deltas), `terminal`, `session_id`, `done` events |
 
 All `/claude/*` routes except `GET /claude` and `POST /claude/auth` require the HMAC token in the `X-Token` header.
 
@@ -98,6 +99,6 @@ Replace `IMAGE_TAG` in `k8s/deployment.yaml` with the image tag you pushed to GH
 
 - Sessions can't be renamed or searched
 - No mobile / responsive layout
-- Replies arrive as a single chunk (no token-by-token streaming) — only the `claude` CLI stderr is streamed live
-- No automated tests
+- No file/image upload or download
+- No slash-command picker or skills browser
 - Single-file architecture is intentional but constrains how much UI complexity is sensible
