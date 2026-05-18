@@ -12,7 +12,51 @@ OBSIDIAN_PATH    = os.environ.get("OBSIDIAN_PATH", "/home/node/obsidian")
 SESSIONS_FILE    = Path(os.environ.get("SESSIONS_FILE", "/home/node/sessions.json"))
 UPLOAD_DIR       = Path(os.environ.get("UPLOAD_DIR", "/home/node/workspace/.uploads"))
 WORKSPACE_DIR    = Path(os.environ.get("WORKSPACE_DIR", "/home/node/workspace"))
+COMMANDS_DIR     = Path(os.environ.get("COMMANDS_DIR", "/home/node/.claude/commands"))
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024  # 20 MB
+
+_BUILTIN_COMMANDS = [
+    {"name": "/clear",   "description": "Clear conversation history",          "category": "builtin"},
+    {"name": "/compact", "description": "Summarize history to save context",    "category": "builtin"},
+    {"name": "/help",    "description": "Show available commands and shortcuts","category": "builtin"},
+    {"name": "/model",   "description": "Switch the AI model",                 "category": "builtin"},
+    {"name": "/doctor",  "description": "Check Claude Code setup and health",   "category": "builtin"},
+    {"name": "/mcp",     "description": "Manage MCP servers",                  "category": "builtin"},
+    {"name": "/review",  "description": "Review staged git changes",            "category": "builtin"},
+    {"name": "/memory",  "description": "Edit Claude memory files",             "category": "builtin"},
+    {"name": "/init",    "description": "Initialize CLAUDE.md for this project","category": "builtin"},
+    {"name": "/pr_comments", "description": "View GitHub PR comments",          "category": "builtin"},
+    {"name": "/cost",    "description": "Show token usage and cost for session","category": "builtin"},
+    {"name": "/logout",  "description": "Log out from Claude account",          "category": "builtin"},
+]
+
+
+def _load_commands() -> list:
+    """Return built-in commands + custom commands from COMMANDS_DIR."""
+    result = list(_BUILTIN_COMMANDS)
+    if COMMANDS_DIR.exists() and COMMANDS_DIR.is_dir():
+        custom = []
+        try:
+            for p in sorted(COMMANDS_DIR.glob("*.md")):
+                name = "/" + p.stem
+                description = ""
+                try:
+                    for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
+                        line = line.strip().lstrip("#").strip()
+                        if line:
+                            description = line[:100]
+                            break
+                except Exception as e:
+                    print(f"[WARN commands] failed to read {p}: {e}", flush=True)
+                custom.append({"name": name, "description": description, "category": "custom"})
+            print(f"[DEBUG commands] found {len(custom)} custom command(s) in {COMMANDS_DIR}", flush=True)
+        except Exception as e:
+            print(f"[WARN commands] failed to scan COMMANDS_DIR: {e}", flush=True)
+        result.extend(custom)
+    else:
+        print(f"[DEBUG commands] COMMANDS_DIR not found: {COMMANDS_DIR}", flush=True)
+    print(f"[DEBUG commands] total {len(result)} commands ({len(_BUILTIN_COMMANDS)} builtin)", flush=True)
+    return result
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".ico"}
 
@@ -299,7 +343,14 @@ HTML = r"""<!DOCTYPE html>
     .tl-other{color:#374151}
 
     /* Input */
-    #footer{padding:12px 20px;border-top:1px solid #1e1e1e;flex-shrink:0}
+    #footer{padding:12px 20px;border-top:1px solid #1e1e1e;flex-shrink:0;position:relative}
+    #slash-picker{position:absolute;bottom:100%;left:20px;right:20px;background:#1a1a1a;border:1px solid #2a2a2a;border-radius:10px;margin-bottom:4px;max-height:260px;overflow-y:auto;display:none;z-index:50;box-shadow:0 -4px 20px rgba(0,0,0,.4)}
+    #slash-picker.open{display:block}
+    .slash-item{display:flex;align-items:center;gap:10px;padding:8px 12px;cursor:pointer;border-radius:6px;margin:3px;transition:background .1s}
+    .slash-item:hover,.slash-item.active{background:#2a2a2a}
+    .slash-cmd{font-weight:600;font-size:13px;color:#a5b4fc;font-family:monospace;flex-shrink:0}
+    .slash-desc{font-size:12px;color:#6b7280;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+    .slash-badge{font-size:10px;padding:1px 5px;border-radius:4px;background:#1e3a5f;color:#93c5fd;flex-shrink:0}
     #form{display:flex;gap:10px;align-items:flex-end}
     #input{flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#e5e5e5;padding:12px 16px;border-radius:14px;font-size:15px;resize:none;outline:none;min-height:48px;max-height:160px;line-height:1.4;font-family:inherit;transition:border-color .15s}
     #input:focus{border-color:#4f46e5}
@@ -426,6 +477,7 @@ HTML = r"""<!DOCTYPE html>
     </div>
 
     <div id="footer">
+      <div id="slash-picker"></div>
       <input type="file" id="file-input" multiple style="display:none">
       <div id="attach-preview"></div>
       <form id="form">
@@ -907,6 +959,7 @@ HTML = r"""<!DOCTYPE html>
     async function afterAuth() {
       await loadSessions();
       await loadArchivedSessions();
+      loadCommands();
       if (sessionId) await openSession(sessionId);
       input.focus();
     }
@@ -933,12 +986,138 @@ HTML = r"""<!DOCTYPE html>
       }).catch(() => {});
     }
 
+    // ── Slash command picker ───────────────────────────
+    const slashPicker = document.getElementById('slash-picker');
+    let slashCommands = [];
+    let slashActive = -1;
+    let slashMatches = [];
+
+    async function loadCommands() {
+      try {
+        const r = await fetch('/claude/commands', { headers: {'X-Token': token} });
+        if (r.ok) {
+          const data = await r.json();
+          slashCommands = data.commands || [];
+          console.debug('[slash] loaded', slashCommands.length, 'commands');
+        }
+      } catch(e) { console.debug('[slash] failed to load commands', e.message); }
+    }
+
+    function renderSlashPicker(matches) {
+      slashPicker.innerHTML = '';
+      matches.forEach((cmd, i) => {
+        const item = document.createElement('div');
+        item.className = 'slash-item' + (i === slashActive ? ' active' : '');
+        item.dataset.idx = i;
+        const nm = document.createElement('span');
+        nm.className = 'slash-cmd';
+        nm.textContent = cmd.name;
+        const desc = document.createElement('span');
+        desc.className = 'slash-desc';
+        desc.textContent = cmd.description || '';
+        item.appendChild(nm);
+        item.appendChild(desc);
+        if (cmd.category === 'custom') {
+          const badge = document.createElement('span');
+          badge.className = 'slash-badge';
+          badge.textContent = 'custom';
+          item.appendChild(badge);
+        }
+        item.addEventListener('mousedown', e => {
+          e.preventDefault();
+          insertSlash(cmd.name);
+        });
+        slashPicker.appendChild(item);
+      });
+    }
+
+    function showSlashPicker(matches) {
+      slashMatches = matches;
+      slashActive = matches.length ? 0 : -1;
+      renderSlashPicker(matches);
+      slashPicker.classList.add('open');
+      console.debug('[slash] open with', matches.length, 'matches');
+    }
+
+    function hideSlashPicker() {
+      slashPicker.classList.remove('open');
+      slashActive = -1;
+      slashMatches = [];
+      console.debug('[slash] closed');
+    }
+
+    function setSlashActive(idx) {
+      slashActive = idx;
+      renderSlashPicker(slashMatches);
+      const activeEl = slashPicker.querySelector('.slash-item.active');
+      if (activeEl) activeEl.scrollIntoView({block: 'nearest'});
+    }
+
+    function insertSlash(cmdName) {
+      const val = input.value;
+      const pos = input.selectionStart;
+      // Find the start of the current /word at cursor
+      let start = pos;
+      while (start > 0 && val[start - 1] !== ' ' && val[start - 1] !== '\n') start--;
+      const newVal = val.slice(0, start) + cmdName + ' ' + val.slice(pos);
+      input.value = newVal;
+      const newPos = start + cmdName.length + 1;
+      input.setSelectionRange(newPos, newPos);
+      input.style.height = 'auto';
+      input.style.height = Math.min(input.scrollHeight, 160) + 'px';
+      hideSlashPicker();
+      console.debug('[slash] inserted', cmdName);
+    }
+
+    function updateSlashPicker(val, cursorPos) {
+      // Find word at cursor
+      let start = cursorPos;
+      while (start > 0 && val[start - 1] !== ' ' && val[start - 1] !== '\n') start--;
+      const word = val.slice(start, cursorPos);
+      if (word.startsWith('/')) {
+        const query = word.slice(1).toLowerCase();
+        const matches = slashCommands.filter(c => c.name.toLowerCase().startsWith('/' + query));
+        if (matches.length) { showSlashPicker(matches); return; }
+      }
+      hideSlashPicker();
+    }
+
+    // Hide picker when clicking outside
+    document.addEventListener('click', e => {
+      if (!slashPicker.contains(e.target) && e.target !== input) hideSlashPicker();
+    });
+
     // ── Chat ───────────────────────────────────────────
     input.addEventListener('input', () => {
       input.style.height = 'auto';
       input.style.height = Math.min(input.scrollHeight, 160) + 'px';
+      updateSlashPicker(input.value, input.selectionStart);
     });
     input.addEventListener('keydown', e => {
+      if (slashPicker.classList.contains('open')) {
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          setSlashActive((slashActive + 1) % slashMatches.length);
+          return;
+        }
+        if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          setSlashActive((slashActive - 1 + slashMatches.length) % slashMatches.length);
+          return;
+        }
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          if (slashActive >= 0 && slashMatches[slashActive]) insertSlash(slashMatches[slashActive].name);
+          else hideSlashPicker();
+          return;
+        }
+        if (e.key === 'Escape') { e.preventDefault(); hideSlashPicker(); return; }
+        if (e.key === 'Tab') {
+          e.preventDefault();
+          if (slashActive >= 0 && slashMatches[slashActive]) insertSlash(slashMatches[slashActive].name);
+          return;
+        }
+      }
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); form.dispatchEvent(new Event('submit')); }
     });
 
@@ -1363,6 +1542,15 @@ async def export_session(session_id: str, request: Request):
                 headers={"Content-Disposition": f'attachment; filename="{filename}"'},
             )
     return JSONResponse({"error": "not found"}, status_code=404)
+
+
+@app.get("/claude/commands")
+async def get_commands(request: Request):
+    if not _authorized(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    commands = _load_commands()
+    print(f"[DEBUG commands] serving {len(commands)} commands", flush=True)
+    return JSONResponse({"commands": commands})
 
 
 @app.post("/claude/upload")
