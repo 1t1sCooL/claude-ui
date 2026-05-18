@@ -21,9 +21,11 @@ class TestLoadCommands(unittest.TestCase):
         self._orig_dir = app_module.COMMANDS_DIR
         self._tmp = tempfile.mkdtemp()
         app_module.COMMANDS_DIR = Path(self._tmp)
+        app_module._commands_cache = (None, 0)  # invalidate TTL cache
 
     def tearDown(self):
         app_module.COMMANDS_DIR = self._orig_dir
+        app_module._commands_cache = (None, 0)  # invalidate TTL cache
         import shutil
         shutil.rmtree(self._tmp, ignore_errors=True)
 

@@ -18,26 +18,26 @@
 - [x] **Workspace File Browser** — Side panel showing the contents of `/home/node/workspace`, view/download/upload files without going through chat
 - [x] **Mobile & Responsive Layout** — Sidebar becomes a drawer, composer is thumb-friendly, attachments work from the camera roll
 - [x] **UI Polish & Theming** — Light/dark toggle, refined typography, motion design, "beautiful UI" pass that matches the project goal
-- [ ] **Multi-User Auth** — Per-user accounts with isolated session storage, replacing the single shared password
+- [x] **Multi-User Auth** — Per-user accounts with isolated session storage, replacing the single shared password
 - [x] **Observability & Tests** — End-to-end smoke tests for the chat flow, error toasts in the UI, structured logs from the backend
 
 ### 🔴 High Priority
 
-- [ ] **Stop Generation** — Cancel a running request mid-stream; Stop button replaces Send while streaming, backend terminates the subprocess
-- [ ] **Message Retry & Edit** — Regenerate assistant response with one click; edit a sent user message and rerun from that point
-- [ ] **Paste Images from Clipboard** — Ctrl+V in the composer pastes screenshots directly as attachments (extends existing drag-and-drop)
+- [x] **Stop Generation** — Cancel a running request mid-stream; Stop button replaces Send while streaming, backend terminates the subprocess
+- [x] **Message Retry & Edit** — Regenerate assistant response with one click; edit a sent user message and rerun from that point
+- [x] **Paste Images from Clipboard** — Ctrl+V in the composer pastes screenshots directly as attachments (extends existing drag-and-drop)
 
 ### 🟡 Medium Priority
 
-- [ ] **Full-Text Session Search** — Search message content across all sessions, not just session titles
-- [ ] **Tool Use Progress Cards** — Show inline "⚡ Using tool: bash" cards in chat while Claude is executing tools, not just in the terminal panel
-- [ ] **Workspace ZIP Export** — Download the entire `/home/node/workspace` as a zip archive with one button click
+- [x] **Full-Text Session Search** — Search message content across all sessions, not just session titles
+- [x] **Tool Use Progress Cards** — Show inline "⚡ Using tool: bash" cards in chat while Claude is executing tools, not just in the terminal panel
+- [x] **Workspace ZIP Export** — Download the entire `/home/node/workspace` as a zip archive with one button click
 
 ### 🟢 Nice to Have
 
-- [ ] **Keyboard Shortcuts** — Ctrl+K new chat, Ctrl+/ skills browser, arrow keys to navigate session list
-- [ ] **Auto-Scroll Toggle** — Pin/unpin scroll so you can read the beginning of a long response while it's still streaming
-- [ ] **Message Full-Text Export** — Export a single session as JSON (in addition to existing markdown export)
+- [x] **Keyboard Shortcuts** — Ctrl+K new chat, Ctrl+/ skills browser, arrow keys to navigate session list
+- [x] **Auto-Scroll Toggle** — Pin/unpin scroll so you can read the beginning of a long response while it's still streaming
+- [x] **Message Full-Text Export** — Export a single session as JSON (in addition to existing markdown export)
 
 ## Completed
 
@@ -58,3 +58,4 @@
 | Workspace File Browser | 2026-05-18 |
 | Skills & Agents Browser | 2026-05-18 |
 | Observability & Tests | 2026-05-18 |
+| Multi-User Auth | 2026-05-18 |
