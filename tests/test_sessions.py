@@ -52,14 +52,14 @@ class TestSessionManagement(unittest.TestCase):
     def test_list_active_excludes_archived(self):
         r = self._c().get("/claude/sessions", headers=self._tok())
         self.assertEqual(r.status_code, 200)
-        sids = [s["session_id"] for s in r.json()]
+        sids = [s["session_id"] for s in r.json()["sessions"]]
         self.assertIn("sess-active", sids)
         self.assertNotIn("sess-archived", sids)
 
     def test_list_archived_only(self):
         r = self._c().get("/claude/sessions?archived=true", headers=self._tok())
         self.assertEqual(r.status_code, 200)
-        sids = [s["session_id"] for s in r.json()]
+        sids = [s["session_id"] for s in r.json()["sessions"]]
         self.assertIn("sess-archived", sids)
         self.assertNotIn("sess-active", sids)
 
@@ -78,7 +78,7 @@ class TestSessionManagement(unittest.TestCase):
     def test_delete_not_in_active_list_after_archive(self):
         self._c().delete("/claude/sessions/sess-active", headers=self._tok())
         r = self._c().get("/claude/sessions", headers=self._tok())
-        sids = [s["session_id"] for s in r.json()]
+        sids = [s["session_id"] for s in r.json()["sessions"]]
         self.assertNotIn("sess-active", sids)
 
     # ── PATCH (RENAME + RESTORE) ─────────────────────────────────────────
@@ -96,7 +96,7 @@ class TestSessionManagement(unittest.TestCase):
         self.assertFalse(r.json()["archived"])
         # Should appear in active list now
         r2 = self._c().get("/claude/sessions", headers=self._tok())
-        sids = [s["session_id"] for s in r2.json()]
+        sids = [s["session_id"] for s in r2.json()["sessions"]]
         self.assertIn("sess-archived", sids)
 
     def test_patch_unauthorized(self):
