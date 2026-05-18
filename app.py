@@ -13,7 +13,73 @@ SESSIONS_FILE    = Path(os.environ.get("SESSIONS_FILE", "/home/node/sessions.jso
 UPLOAD_DIR       = Path(os.environ.get("UPLOAD_DIR", "/home/node/workspace/.uploads"))
 WORKSPACE_DIR    = Path(os.environ.get("WORKSPACE_DIR", "/home/node/workspace"))
 COMMANDS_DIR     = Path(os.environ.get("COMMANDS_DIR", "/home/node/.claude/commands"))
+# Colon-separated list of skill directories to scan
+SKILLS_DIRS      = [Path(p) for p in os.environ.get(
+    "SKILLS_DIRS",
+    "/home/node/.claude/skills:/app/.claude/skills"
+).split(":") if p]
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024  # 20 MB
+
+
+def _parse_skill_frontmatter(text: str) -> dict:
+    """Extract YAML-like frontmatter from skill SKILL.md."""
+    meta: dict = {}
+    if not text.startswith("---"):
+        # No frontmatter — try to grab first heading as description
+        for line in text.splitlines():
+            line = line.strip().lstrip("#").strip()
+            if line:
+                meta["description"] = line[:200]
+                break
+        return meta
+    end = text.find("\n---", 3)
+    block = text[3:end] if end != -1 else text[3:]
+    for line in block.splitlines():
+        if ":" not in line:
+            continue
+        key, _, val = line.partition(":")
+        key = key.strip().lower()
+        val = val.strip().strip('"').strip("'")
+        if key in ("name", "description", "argument-hint", "trigger"):
+            meta[key] = val[:300]
+    return meta
+
+
+def _load_skills() -> list:
+    """Scan SKILLS_DIRS for skill subdirectories with SKILL.md files."""
+    seen: set = set()
+    result = []
+    for base in SKILLS_DIRS:
+        if not base.exists():
+            print(f"[DEBUG skills] dir not found: {base}", flush=True)
+            continue
+        try:
+            for skill_dir in sorted(base.iterdir()):
+                if not skill_dir.is_dir():
+                    continue
+                skill_md = skill_dir / "SKILL.md"
+                if not skill_md.exists():
+                    continue
+                try:
+                    text = skill_md.read_text(encoding="utf-8", errors="replace")
+                except Exception:
+                    continue
+                meta = _parse_skill_frontmatter(text)
+                name = meta.get("name") or skill_dir.name
+                if name in seen:
+                    continue
+                seen.add(name)
+                result.append({
+                    "name": name,
+                    "trigger": meta.get("trigger") or f"/{name}",
+                    "description": meta.get("description") or "",
+                    "argument_hint": meta.get("argument-hint") or "",
+                    "source": str(base.name),
+                })
+        except Exception as e:
+            print(f"[WARN skills] failed to scan {base}: {e}", flush=True)
+    print(f"[DEBUG skills] found {len(result)} skill(s) across {len(SKILLS_DIRS)} dir(s)", flush=True)
+    return result
 
 _BUILTIN_COMMANDS = [
     {"name": "/clear",   "description": "Clear conversation history",          "category": "builtin"},
@@ -500,6 +566,31 @@ HTML = r"""<!DOCTYPE html>
     #workspace-toggle:hover,#workspace-toggle.active{background:var(--bg4);color:var(--text)}
     #workspace-toggle svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
 
+    /* ── Skills browser modal ───────────────────────── */
+    #skills-modal{position:fixed;inset:0;z-index:95;display:none;align-items:flex-end;justify-content:center;padding:0}
+    #skills-modal.open{display:flex}
+    #skills-backdrop{position:absolute;inset:0;background:rgba(0,0,0,.5);backdrop-filter:blur(3px)}
+    #skills-sheet{position:relative;width:100%;max-width:640px;max-height:70vh;background:var(--bg2);border-radius:16px 16px 0 0;display:flex;flex-direction:column;z-index:1;box-shadow:0 -8px 40px var(--shadow)}
+    @media(min-width:640px){#skills-sheet{border-radius:16px;margin-bottom:60px;max-height:75vh}}
+    #skills-sheet-header{padding:16px 18px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-shrink:0}
+    #skills-sheet-header h3{font-size:15px;font-weight:700;color:var(--text);flex:1}
+    #skills-search-input{flex:1;background:var(--bg3);border:1px solid var(--border2);color:var(--text);padding:7px 12px;border-radius:8px;font-size:13px;outline:none;font-family:inherit}
+    #skills-search-input:focus{border-color:var(--accent)}
+    #skills-sheet-close{background:none;border:none;color:var(--text3);cursor:pointer;font-size:20px;padding:0 4px;line-height:1;transition:color .15s}
+    #skills-sheet-close:hover{color:var(--text)}
+    #skills-list{overflow-y:auto;padding:8px}
+    .skill-item{display:flex;align-items:flex-start;gap:12px;padding:10px 12px;border-radius:10px;cursor:pointer;transition:background .1s;border:1px solid transparent}
+    .skill-item:hover{background:var(--bg3);border-color:var(--border2)}
+    .skill-trigger{font-family:monospace;font-size:13px;font-weight:700;color:var(--accent);white-space:nowrap;flex-shrink:0;min-width:120px}
+    .skill-info{flex:1;min-width:0}
+    .skill-desc{font-size:12px;color:var(--text2);line-height:1.45;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+    .skill-hint{font-size:11px;color:var(--text4);margin-top:3px;font-family:monospace}
+    .skill-source{font-size:10px;padding:1px 6px;border-radius:4px;background:var(--bg4);color:var(--text3);flex-shrink:0;align-self:flex-start;margin-top:2px}
+    .skills-section-title{font-size:10px;color:var(--text4);text-transform:uppercase;letter-spacing:.08em;padding:6px 12px 2px;font-weight:600}
+    #skills-toggle{width:32px;height:32px;flex-shrink:0;background:var(--bg3);border:1px solid var(--border2);color:var(--text3);border-radius:8px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:background .15s,color .15s;margin-left:4px}
+    #skills-toggle:hover,#skills-toggle.active{background:var(--bg4);color:var(--text)}
+    #skills-toggle svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+
     /* ── Mobile drawer ─────────────────────────────── */
     #mobile-menu-btn{display:none;width:36px;height:36px;flex-shrink:0;background:var(--bg3);border:1px solid var(--border2);color:var(--text3);border-radius:8px;cursor:pointer;align-items:center;justify-content:center;transition:background .15s,color .15s;order:-1}
     #mobile-menu-btn:hover{background:var(--bg4);color:var(--text)}
@@ -591,6 +682,9 @@ HTML = r"""<!DOCTYPE html>
       <button id="workspace-toggle" title="Файлы workspace" aria-label="Файлы workspace">
         <svg viewBox="0 0 24 24"><path d="M3 3h18v18H3z" stroke-width="1.5"/><path d="M3 9h18M9 21V9"/></svg>
       </button>
+      <button id="skills-toggle" title="Скиллы и команды" aria-label="Скиллы">
+        <svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+      </button>
     </div>
 
     <div id="messages">
@@ -618,6 +712,18 @@ HTML = r"""<!DOCTYPE html>
           <svg viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
         </button>
       </form>
+    </div>
+  </div>
+
+  <div id="skills-modal">
+    <div id="skills-backdrop"></div>
+    <div id="skills-sheet">
+      <div id="skills-sheet-header">
+        <h3>⚡ Скиллы и команды</h3>
+        <input id="skills-search-input" placeholder="Поиск..." type="text">
+        <button id="skills-sheet-close">×</button>
+      </div>
+      <div id="skills-list"></div>
     </div>
   </div>
 
@@ -1142,6 +1248,84 @@ HTML = r"""<!DOCTYPE html>
         }
       } catch(e) { authErr.textContent = 'Ошибка соединения'; }
     }
+
+    // ── Skills Browser ────────────────────────────────
+    const skillsModal   = document.getElementById('skills-modal');
+    const skillsList    = document.getElementById('skills-list');
+    const skillsSearch  = document.getElementById('skills-search-input');
+    const skillsTogBtn  = document.getElementById('skills-toggle');
+    let allSkills = [];
+
+    async function loadSkills() {
+      try {
+        const r = await fetch('/claude/skills', { headers: {'X-Token': token} });
+        if (r.ok) { allSkills = (await r.json()).skills || []; console.debug('[skills] loaded', allSkills.length); }
+      } catch(e) { console.debug('[skills] load error', e.message); }
+    }
+
+    function renderSkills(query) {
+      const q = (query || '').toLowerCase().trim();
+      const filtered = q ? allSkills.filter(s =>
+        s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q)
+      ) : allSkills;
+
+      skillsList.innerHTML = '';
+      if (!filtered.length) {
+        skillsList.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text3);font-size:13px">Ничего не найдено</div>';
+        return;
+      }
+
+      const bySource = {};
+      filtered.forEach(s => { (bySource[s.source] = bySource[s.source] || []).push(s); });
+      Object.entries(bySource).forEach(([src, items]) => {
+        const title = document.createElement('div');
+        title.className = 'skills-section-title';
+        title.textContent = src;
+        skillsList.appendChild(title);
+        items.forEach(skill => {
+          const item = document.createElement('div');
+          item.className = 'skill-item';
+          item.innerHTML = `
+            <span class="skill-trigger">${skill.trigger}</span>
+            <div class="skill-info">
+              <div class="skill-desc">${skill.description || '—'}</div>
+              ${skill.argument_hint ? `<div class="skill-hint">${skill.argument_hint}</div>` : ''}
+            </div>
+            ${src !== 'skills' ? `<span class="skill-source">${src}</span>` : ''}
+          `;
+          item.addEventListener('click', () => {
+            const ins = skill.trigger + (skill.argument_hint ? ' ' : '');
+            const cur = input.value;
+            input.value = cur ? cur + '\n' + ins : ins;
+            input.style.height = 'auto';
+            input.style.height = Math.min(input.scrollHeight, 160) + 'px';
+            closeSkillsModal();
+            input.focus();
+            console.debug('[skills] inserted', skill.trigger);
+          });
+          skillsList.appendChild(item);
+        });
+      });
+    }
+
+    function openSkillsModal() {
+      skillsModal.classList.add('open');
+      skillsTogBtn.classList.add('active');
+      if (!allSkills.length) loadSkills().then(() => renderSkills(skillsSearch.value));
+      else renderSkills(skillsSearch.value);
+      skillsSearch.focus();
+    }
+
+    function closeSkillsModal() {
+      skillsModal.classList.remove('open');
+      skillsTogBtn.classList.remove('active');
+    }
+
+    skillsTogBtn.addEventListener('click', () => skillsModal.classList.contains('open') ? closeSkillsModal() : openSkillsModal());
+    document.getElementById('skills-sheet-close').addEventListener('click', closeSkillsModal);
+    document.getElementById('skills-backdrop').addEventListener('click', closeSkillsModal);
+    skillsSearch.addEventListener('input', () => renderSkills(skillsSearch.value));
+    document.addEventListener('keydown', e => { if (e.key === 'Escape' && skillsModal.classList.contains('open')) closeSkillsModal(); });
 
     // ── Workspace File Browser ─────────────────────────
     const wsPanel   = document.getElementById('workspace-panel');
@@ -1867,6 +2051,15 @@ async def get_commands(request: Request):
     commands = _load_commands()
     print(f"[DEBUG commands] serving {len(commands)} commands", flush=True)
     return JSONResponse({"commands": commands})
+
+
+@app.get("/claude/skills")
+async def get_skills(request: Request):
+    if not _authorized(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    skills = _load_skills()
+    print(f"[DEBUG skills] serving {len(skills)} skills", flush=True)
+    return JSONResponse({"skills": skills})
 
 
 @app.post("/claude/upload")
