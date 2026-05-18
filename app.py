@@ -1277,6 +1277,63 @@ async def serve_file(file_path: str, request: Request):
     return FileResponse(str(dest))
 
 
+async def _anthropic_stream(prompt: str, augmented: str, image_attachments: list,
+                            model: str, session_id: str, attachments: list):
+    """Async SSE generator using Anthropic SDK — handles multimodal image messages."""
+    import anthropic as _anth
+
+    content: list = [{"type": "text", "text": augmented}]
+    for a in image_attachments:
+        fpath = Path(a.get("path", ""))
+        if fpath.exists() and fpath.is_file():
+            try:
+                b64 = base64.standard_b64encode(fpath.read_bytes()).decode()
+                mime = a.get("mime_type", "image/jpeg")
+                content.append({"type": "image", "source": {
+                    "type": "base64", "media_type": mime, "data": b64,
+                }})
+                print(f"[DEBUG anthropic] encoded {fpath.name} ({len(b64)} b64 chars)", flush=True)
+            except Exception as e:
+                print(f"[WARN anthropic] failed to encode {fpath}: {e}", flush=True)
+
+    # Map claude model names to Anthropic API model IDs
+    _model_map = {
+        "claude-sonnet-4-6": "claude-sonnet-4-5",
+        "claude-opus-4-7":   "claude-opus-4-5",
+        "claude-haiku-4-5-20251001": "claude-haiku-4-5",
+    }
+    api_model = _model_map.get(model, model)
+
+    client = _anth.AsyncAnthropic()
+    final_sid = session_id or f"img-{uuid.uuid4().hex[:12]}"
+    full_text: list[str] = []
+
+    try:
+        print(f"[DEBUG anthropic] streaming model={api_model} content_parts={len(content)}", flush=True)
+        yield f"data: {json.dumps({'session_id': final_sid})}\n\n"
+
+        async with client.messages.stream(
+            model=api_model,
+            max_tokens=8192,
+            messages=[{"role": "user", "content": content}],
+        ) as stream_ctx:
+            async for delta in stream_ctx.text_stream:
+                full_text.append(delta)
+                yield f"data: {json.dumps({'text': delta})}\n\n"
+
+        print(f"[DEBUG anthropic] done text_len={sum(len(t) for t in full_text)}", flush=True)
+    except Exception as e:
+        err = f"[ERROR] Anthropic API: {e}"
+        full_text.append(err)
+        print(f"[ERROR anthropic] {e}", flush=True)
+        yield f"data: {json.dumps({'text': err})}\n\n"
+
+    yield f"data: {json.dumps({'done': True})}\n\n"
+    assistant_text = "".join(full_text)
+    _upsert_session(final_sid, prompt, assistant_text, attachments=attachments)
+    print(f"[INFO anthropic] session saved sid={final_sid} text_len={len(assistant_text)}", flush=True)
+
+
 @app.post("/claude/ask")
 async def ask(request: Request):
     if not _authorized(request):
@@ -1302,51 +1359,23 @@ async def ask(request: Request):
     print(f"[DEBUG ask] attachments={len(attachments)} images={len(image_attachments)} augmented_len={len(augmented)}", flush=True)
 
     # Build multimodal stdin payload when images are present
-    stdin_data: Optional[bytes] = None
-    if image_attachments:
-        content: list = [{"type": "text", "text": augmented}]
-        for a in image_attachments:
-            fpath = Path(a.get("path", ""))
-            if fpath.exists() and fpath.is_file():
-                try:
-                    b64 = base64.standard_b64encode(fpath.read_bytes()).decode()
-                    mime = a.get("mime_type", "image/jpeg")
-                    content.append({"type": "image", "source": {
-                        "type": "base64", "media_type": mime, "data": b64,
-                    }})
-                    print(f"[DEBUG ask] encoded image {fpath.name} ({len(b64)} b64 chars)", flush=True)
-                except Exception as e:
-                    print(f"[WARN ask] failed to encode image {fpath}: {e}", flush=True)
-        stdin_data = json.dumps([{"role": "user", "content": content}]).encode()
-
     async def stream():
         env = {**os.environ, "HOME": "/home/node"}
-        if stdin_data:
-            # Multimodal path: pass message via stdin with --input-format json
-            cmd = ["claude", "--model", model,
-                   "--dangerously-skip-permissions", "--max-turns", "20",
-                   "--output-format", "stream-json", "--verbose",
-                   "--input-format", "json"]
-        else:
-            # Text-only path: pass prompt via -p flag
-            cmd = ["claude", "-p", augmented, "--model", model,
-                   "--dangerously-skip-permissions", "--max-turns", "20",
-                   "--output-format", "stream-json", "--verbose"]
+
+        # ── Text-only path — use claude CLI ────────────────────────────────
+        cmd = ["claude", "-p", augmented, "--model", model,
+               "--dangerously-skip-permissions", "--max-turns", "20",
+               "--output-format", "stream-json", "--verbose"]
         if session_id:
             cmd += ["--resume", session_id]
 
         proc = await asyncio.create_subprocess_exec(
             *cmd,
-            stdin=asyncio.subprocess.PIPE if stdin_data else asyncio.subprocess.DEVNULL,
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
         )
-        if stdin_data:
-            proc.stdin.write(stdin_data)
-            await proc.stdin.drain()
-            proc.stdin.close()
-            print(f"[DEBUG stream] sent {len(stdin_data)} bytes via stdin (multimodal)", flush=True)
 
         final_sid = session_id
         parts: list[str] = []
@@ -1442,6 +1471,14 @@ async def ask(request: Request):
             _upsert_session(final_sid, prompt, assistant_text, attachments=attachments)
             print(f"[INFO stream] session saved sid={final_sid} text_len={len(assistant_text)} is_error={is_error} attachments={len(attachments)}", flush=True)
         asyncio.create_task(_git_push(env))
+
+    if image_attachments:
+        return StreamingResponse(
+            _anthropic_stream(prompt, augmented, image_attachments, model,
+                              session_id, attachments),
+            media_type="text/event-stream",
+            headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
+        )
 
     return StreamingResponse(
         stream(),

@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN npm install -g @anthropic-ai/claude-code
 
-RUN pip3 install fastapi uvicorn python-multipart --break-system-packages
+RUN pip3 install fastapi uvicorn python-multipart anthropic --break-system-packages
 
 WORKDIR /app
 COPY app.py .
