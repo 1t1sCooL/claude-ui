@@ -408,6 +408,7 @@ HTML = r"""<!DOCTYPE html>
     .session-item{display:flex;align-items:center;gap:6px;padding:9px 10px;border-radius:9px;cursor:pointer;transition:background .15s;margin-bottom:2px;position:relative}
     .session-item:hover{background:var(--bg3)}
     .session-item.active{background:var(--accent-glow);border:1px solid rgba(79,70,229,.3)}
+    .session-item.kbd-focus{background:var(--bg4);outline:2px solid var(--accent);outline-offset:-2px}
     .session-item.active .session-title{color:var(--text);font-weight:500}
     .session-info{flex:1;overflow:hidden}
     .session-title{font-size:12px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -598,6 +599,19 @@ HTML = r"""<!DOCTYPE html>
     #workspace-toggle:hover,#workspace-toggle.active{background:var(--bg4);color:var(--text)}
     #workspace-toggle svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
 
+    /* ── Shortcuts modal ─────────────────────────────── */
+    #shortcuts-modal{position:fixed;inset:0;z-index:95;display:none;align-items:center;justify-content:center}
+    #shortcuts-modal.open{display:flex}
+    #shortcuts-backdrop2{position:absolute;inset:0;background:rgba(0,0,0,.5);backdrop-filter:blur(3px)}
+    #shortcuts-sheet{position:relative;background:var(--bg2);border:1px solid var(--border2);border-radius:16px;padding:20px 24px;min-width:320px;max-width:420px;z-index:1;box-shadow:0 8px 40px var(--shadow)}
+    #shortcuts-sheet h3{font-size:15px;font-weight:700;margin-bottom:14px;color:var(--text)}
+    .kbd-row{display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border);font-size:13px;color:var(--text2)}
+    .kbd-row:last-child{border-bottom:none}
+    kbd{background:var(--bg4);border:1px solid var(--border2);border-radius:5px;padding:2px 7px;font-size:11px;font-family:monospace;color:var(--text);white-space:nowrap}
+    #shortcuts-close2{position:absolute;top:12px;right:14px;background:none;border:none;color:var(--text3);cursor:pointer;font-size:20px;padding:0 4px;line-height:1}
+    #shortcuts-close2:hover{color:var(--text)}
+    #shortcuts-btn:hover{background:var(--bg4);color:var(--text)}
+
     /* ── Toast notifications ────────────────────────── */
     #toast-container{position:fixed;bottom:80px;right:20px;z-index:200;display:flex;flex-direction:column;gap:8px;pointer-events:none}
     @media(max-width:768px){#toast-container{bottom:70px;right:12px;left:12px}}
@@ -737,6 +751,7 @@ HTML = r"""<!DOCTYPE html>
       <button id="skills-toggle" title="Скиллы и команды" aria-label="Скиллы">
         <svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
       </button>
+      <button id="shortcuts-btn" title="Горячие клавиши" aria-label="Горячие клавиши" style="width:32px;height:32px;flex-shrink:0;background:var(--bg3);border:1px solid var(--border2);color:var(--text3);border-radius:8px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;margin-left:4px;transition:background .15s,color .15s;font-family:inherit">?</button>
     </div>
 
     <div id="messages">
@@ -767,6 +782,23 @@ HTML = r"""<!DOCTYPE html>
           <svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
         </button>
       </form>
+    </div>
+  </div>
+
+  <div id="shortcuts-modal">
+    <div id="shortcuts-backdrop2"></div>
+    <div id="shortcuts-sheet">
+      <button id="shortcuts-close2">×</button>
+      <h3>⌨️ Горячие клавиши</h3>
+      <div class="kbd-row"><span>Новый чат</span><kbd>Ctrl+K</kbd></div>
+      <div class="kbd-row"><span>Свернуть сайдбар</span><kbd>Ctrl+B</kbd></div>
+      <div class="kbd-row"><span>Скиллы</span><kbd>Ctrl+/</kbd></div>
+      <div class="kbd-row"><span>Файлы workspace</span><kbd>Ctrl+.</kbd></div>
+      <div class="kbd-row"><span>Отправить сообщение</span><kbd>Enter</kbd></div>
+      <div class="kbd-row"><span>Новая строка</span><kbd>Shift+Enter</kbd></div>
+      <div class="kbd-row"><span>Вставить скриншот</span><kbd>Ctrl+V</kbd></div>
+      <div class="kbd-row"><span>Навигация по сессиям</span><kbd>↑</kbd> <kbd>↓</kbd> <kbd>Enter</kbd></div>
+      <div class="kbd-row"><span>Закрыть панель</span><kbd>Esc</kbd></div>
     </div>
   </div>
 
@@ -1091,13 +1123,95 @@ HTML = r"""<!DOCTYPE html>
     if (sidebarToggle) sidebarToggle.addEventListener('click', toggleSidebar);
     document.getElementById('mobile-menu-btn').addEventListener('click', toggleSidebar);
 
+    // ── Keyboard shortcuts ─────────────────────────────
+    // Ctrl/Cmd+B  → sidebar toggle
+    // Ctrl/Cmd+K  → new chat
+    // Ctrl/Cmd+/  → skills browser
+    // Ctrl/Cmd+.  → workspace browser
+    // ↑/↓         → navigate session list (when input not focused)
+    // Escape      → close open panels/modals
+    let _sessionNavIdx = -1;
+
+    function getVisibleSessions() {
+      return Array.from(sesList.querySelectorAll('.session-item'))
+        .filter(el => el.style.display !== 'none');
+    }
+
+    function highlightSessionNav(idx) {
+      const items = getVisibleSessions();
+      items.forEach((el, i) => el.classList.toggle('kbd-focus', i === idx));
+      if (items[idx]) items[idx].scrollIntoView({block: 'nearest'});
+    }
+
     window.addEventListener('keydown', e => {
-      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'b') {
-        if (!authEl.classList.contains('hidden')) return;
-        e.preventDefault();
-        toggleSidebar();
+      if (authEl && !authEl.classList.contains('hidden')) return;
+      const mod = e.ctrlKey || e.metaKey;
+      const inputFocused = document.activeElement === input;
+
+      // Ctrl/Cmd + key shortcuts
+      if (mod && !e.shiftKey && !e.altKey) {
+        const k = e.key.toLowerCase();
+        if (k === 'b') { e.preventDefault(); toggleSidebar(); return; }
+        if (k === 'k') {
+          e.preventDefault();
+          document.getElementById('new-chat-btn').click();
+          input.focus();
+          return;
+        }
+        if (k === '/') {
+          e.preventDefault();
+          skillsModal.classList.contains('open') ? closeSkillsModal() : openSkillsModal();
+          return;
+        }
+        if (k === '.') {
+          e.preventDefault();
+          wsTogBtn.click();
+          return;
+        }
+      }
+
+      // Escape — close open panels
+      if (e.key === 'Escape') {
+        if (shortcutsModal && shortcutsModal.classList.contains('open')) { closeShortcuts(); return; }
+        if (skillsModal.classList.contains('open')) { closeSkillsModal(); return; }
+        if (wsPanel.classList.contains('open')) { wsPanel.classList.remove('open'); wsTogBtn.classList.remove('active'); return; }
+        if (isMobile() && sidebar.classList.contains('mobile-open')) { closeMobileDrawer(); return; }
+      }
+
+      // ↑/↓ session navigation (only when input/search not focused)
+      const searchEl = document.getElementById('session-search');
+      if (!inputFocused && document.activeElement !== searchEl) {
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          const items = getVisibleSessions();
+          _sessionNavIdx = Math.min(_sessionNavIdx + 1, items.length - 1);
+          highlightSessionNav(_sessionNavIdx);
+          return;
+        }
+        if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          _sessionNavIdx = Math.max(_sessionNavIdx - 1, 0);
+          highlightSessionNav(_sessionNavIdx);
+          return;
+        }
+        if (e.key === 'Enter' && _sessionNavIdx >= 0) {
+          const items = getVisibleSessions();
+          if (items[_sessionNavIdx]) {
+            items[_sessionNavIdx].click();
+            _sessionNavIdx = -1;
+            input.focus();
+          }
+          return;
+        }
       }
     });
+
+    // Reset session nav index when sessions reload
+    const _origLoadSessions = loadSessions;
+    async function loadSessions() {
+      _sessionNavIdx = -1;
+      return _origLoadSessions();
+    }
 
     // Close mobile drawer when screen resizes to desktop
     window.addEventListener('resize', () => { if (!isMobile()) closeMobileDrawer(); });
@@ -1483,7 +1597,15 @@ HTML = r"""<!DOCTYPE html>
     document.getElementById('skills-sheet-close').addEventListener('click', closeSkillsModal);
     document.getElementById('skills-backdrop').addEventListener('click', closeSkillsModal);
     skillsSearch.addEventListener('input', () => renderSkills(skillsSearch.value));
-    document.addEventListener('keydown', e => { if (e.key === 'Escape' && skillsModal.classList.contains('open')) closeSkillsModal(); });
+
+    // ── Shortcuts modal ───────────────────────────────────
+    const shortcutsModal = document.getElementById('shortcuts-modal');
+    function openShortcuts() { shortcutsModal.classList.add('open'); }
+    function closeShortcuts() { shortcutsModal.classList.remove('open'); }
+    document.getElementById('shortcuts-btn').addEventListener('click', () =>
+      shortcutsModal.classList.contains('open') ? closeShortcuts() : openShortcuts());
+    document.getElementById('shortcuts-close2').addEventListener('click', closeShortcuts);
+    document.getElementById('shortcuts-backdrop2').addEventListener('click', closeShortcuts);
 
     // ── Workspace File Browser ─────────────────────────
     const wsPanel   = document.getElementById('workspace-panel');
