@@ -39,15 +39,39 @@ def _write_sessions(sessions: list):
     SESSIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
     SESSIONS_FILE.write_text(json.dumps(sessions, ensure_ascii=False, indent=2))
 
+_MAX_INLINE_BYTES = 50_000  # embed up to 50 KB of text file content inline
+
+
 def _build_prompt(prompt: str, attachments: list[dict]) -> str:
     if not attachments:
         return prompt
-    lines = [prompt, "", "---", "Attached files for this message:"]
+    parts = [prompt, "", "---"]
     for a in attachments:
-        label = "Image" if a.get("is_image") else "File"
-        lines.append(f"- {label}: {a['path']} (filename: {a['name']})")
-    lines.append("(You can use your file reading / view tools to access these files.)")
-    return "\n".join(lines)
+        if a.get("is_image"):
+            parts.append(f"[Image '{a['name']}' attached above as visual content]")
+            continue
+        # Text / code file: embed content directly so Claude can read it without tools
+        fpath = Path(a.get("path", ""))
+        if fpath.exists() and fpath.is_file():
+            try:
+                raw = fpath.read_bytes()
+                # Try to decode as UTF-8; if that fails, treat as binary
+                try:
+                    content = raw.decode("utf-8")
+                except UnicodeDecodeError:
+                    parts.append(f"[Binary file '{a['name']}' at {fpath} — cannot display inline]")
+                    continue
+                if len(content) > _MAX_INLINE_BYTES:
+                    content = content[:_MAX_INLINE_BYTES] + "\n… (truncated)"
+                ext = fpath.suffix.lstrip(".") or "text"
+                parts.append(f"\n**File: {a['name']}**\n```{ext}\n{content}\n```")
+                print(f"[DEBUG build_prompt] embedded {a['name']} ({len(content)} chars)", flush=True)
+            except Exception as e:
+                parts.append(f"[Could not read '{a['name']}': {e}]")
+                print(f"[WARN build_prompt] failed to read {fpath}: {e}", flush=True)
+        else:
+            parts.append(f"[File '{a['name']}' not found at {a.get('path')}]")
+    return "\n".join(parts)
 
 
 def _upsert_session(session_id: str, user_msg: str, assistant_msg: str,
