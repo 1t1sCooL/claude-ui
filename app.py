@@ -11,7 +11,53 @@ APP_PASSWORD     = os.environ.get("APP_PASSWORD", "")
 OBSIDIAN_PATH    = os.environ.get("OBSIDIAN_PATH", "/home/node/obsidian")
 SESSIONS_FILE    = Path(os.environ.get("SESSIONS_FILE", "/home/node/sessions.json"))
 UPLOAD_DIR       = Path(os.environ.get("UPLOAD_DIR", "/home/node/workspace/.uploads"))
+WORKSPACE_DIR    = Path(os.environ.get("WORKSPACE_DIR", "/home/node/workspace"))
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024  # 20 MB
+
+_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".ico"}
+
+
+def _snapshot_workspace() -> dict:
+    """Return {rel_path: mtime} for all files in WORKSPACE_DIR, excluding .uploads/."""
+    snapshot: dict = {}
+    if not WORKSPACE_DIR.exists():
+        return snapshot
+    try:
+        for p in WORKSPACE_DIR.rglob("*"):
+            if not p.is_file():
+                continue
+            rel = p.relative_to(WORKSPACE_DIR)
+            parts = rel.parts
+            # skip .uploads and hidden top-level dirs
+            if parts and (parts[0] == ".uploads" or parts[0].startswith(".")):
+                continue
+            snapshot[str(rel)] = p.stat().st_mtime
+    except Exception as e:
+        print(f"[WARN snapshot] failed to snapshot workspace: {e}", flush=True)
+    print(f"[DEBUG snapshot] {len(snapshot)} files in workspace", flush=True)
+    return snapshot
+
+
+def _diff_workspace(before: dict, after: dict) -> list:
+    """Return list of {name, rel_path, is_image, size} for new or modified files."""
+    result = []
+    for rel_path, mtime in after.items():
+        if rel_path not in before or before[rel_path] != mtime:
+            full = WORKSPACE_DIR / rel_path
+            try:
+                size = full.stat().st_size
+            except Exception:
+                size = 0
+            ext = Path(rel_path).suffix.lower()
+            result.append({
+                "name": Path(rel_path).name,
+                "rel_path": rel_path,
+                "is_image": ext in _IMAGE_EXTS,
+                "size": size,
+            })
+            print(f"[DEBUG diff] {'new' if rel_path not in before else 'modified'}: {rel_path} ({size}b)", flush=True)
+    print(f"[DEBUG diff] {len(result)} output files detected", flush=True)
+    return result
 _TOKEN = hmac.new(b"claude-ui", APP_PASSWORD.encode(), hashlib.sha256).hexdigest() if APP_PASSWORD else ""
 
 
@@ -75,19 +121,21 @@ def _build_prompt(prompt: str, attachments: list[dict]) -> str:
 
 
 def _upsert_session(session_id: str, user_msg: str, assistant_msg: str,
-                    attachments: Optional[list] = None):
+                    attachments: Optional[list] = None,
+                    output_files: Optional[list] = None):
     sessions = _load_sessions()
     now = datetime.utcnow().isoformat()
     user_record: dict = {"role": "user", "text": user_msg}
     if attachments:
         user_record["attachments"] = attachments
+    assistant_record: dict = {"role": "assistant", "text": assistant_msg}
+    if output_files:
+        assistant_record["output_files"] = output_files
+        print(f"[DEBUG upsert] saving {len(output_files)} output_files in session {session_id}", flush=True)
     for s in sessions:
         if s["session_id"] == session_id:
             s["updated_at"] = now
-            s["messages"].extend([
-                user_record,
-                {"role": "assistant", "text": assistant_msg},
-            ])
+            s["messages"].extend([user_record, assistant_record])
             _write_sessions(sessions)
             return
     title = user_msg[:60] + ("…" if len(user_msg) > 60 else "")
@@ -96,10 +144,7 @@ def _upsert_session(session_id: str, user_msg: str, assistant_msg: str,
         "title":      title,
         "created_at": now,
         "updated_at": now,
-        "messages": [
-            user_record,
-            {"role": "assistant", "text": assistant_msg},
-        ],
+        "messages": [user_record, assistant_record],
     })
     _write_sessions(sessions)
 
@@ -283,6 +328,18 @@ HTML = r"""<!DOCTYPE html>
     .bubble-attachments{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px}
     .bubble-attachments img{max-width:200px;max-height:200px;border-radius:8px;display:block;object-fit:cover}
     .bubble-file-chip{display:inline-flex;align-items:center;gap:4px;background:rgba(255,255,255,.07);border-radius:6px;padding:3px 8px;font-size:12px;color:#aaa}
+
+    /* Output files tray */
+    .output-files-tray{border-top:1px solid #2a2a2a;margin-top:8px;padding-top:8px}
+    .output-files-tray .tray-label{font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px}
+    .output-image-row{margin:4px 0}
+    .output-image-row img{max-width:100%;border-radius:6px;display:block}
+    .file-row{display:flex;align-items:center;gap:8px;padding:3px 0;font-size:13px;color:#9ca3af}
+    .file-row .file-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#d1d5db}
+    .file-row a.dl-btn{color:#818cf8;text-decoration:none;white-space:nowrap;flex-shrink:0}
+    .file-row a.dl-btn:hover{color:#a5b4fc;text-decoration:underline}
+    .file-row .del-btn{background:none;border:none;cursor:pointer;color:#4b5563;padding:0;font-size:13px;flex-shrink:0;transition:color .15s}
+    .file-row .del-btn:hover{color:#f87171}
 
     /* Drag-over highlight */
     body.drag-over #messages{outline:2px dashed #4f46e5;outline-offset:-4px}
@@ -689,7 +746,7 @@ HTML = r"""<!DOCTYPE html>
 
         messages.innerHTML = '';
         for (const m of (s.messages || [])) {
-          addMsg(m.role, m.text, m.attachments || []);
+          addMsg(m.role, m.text, m.attachments || [], m.output_files || []);
         }
         if (!s.messages?.length) {
           messages.innerHTML = '<div class="msg assistant"><div class="bubble">Привет! Чем могу помочь?</div></div>';
@@ -876,7 +933,77 @@ HTML = r"""<!DOCTYPE html>
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); form.dispatchEvent(new Event('submit')); }
     });
 
-    function addMsg(role, text = '', attachments = []) {
+    function formatBytes(n) {
+      if (n < 1024) return n + ' B';
+      if (n < 1048576) return (n/1024).toFixed(1) + ' KB';
+      return (n/1048576).toFixed(1) + ' MB';
+    }
+
+    function renderOutputFiles(msgEl, outputFiles) {
+      if (!outputFiles || !outputFiles.length) return;
+      console.debug('[output] rendering', outputFiles.length, 'output files');
+      const tray = document.createElement('div');
+      tray.className = 'output-files-tray';
+      const label = document.createElement('div');
+      label.className = 'tray-label';
+      label.textContent = 'Созданные файлы';
+      tray.appendChild(label);
+
+      outputFiles.forEach(f => {
+        const url = `/claude/workspace/file/${f.rel_path}`;
+        if (f.is_image) {
+          const row = document.createElement('div');
+          row.className = 'output-image-row';
+          const img = document.createElement('img');
+          img.src = url;
+          img.alt = f.name;
+          img.loading = 'lazy';
+          row.appendChild(img);
+          tray.appendChild(row);
+        }
+        const row = document.createElement('div');
+        row.className = 'file-row';
+        const nm = document.createElement('span');
+        nm.className = 'file-name';
+        nm.title = f.rel_path;
+        nm.textContent = f.name;
+        const sz = document.createElement('span');
+        sz.textContent = formatBytes(f.size || 0);
+        const dl = document.createElement('a');
+        dl.className = 'dl-btn';
+        dl.href = url;
+        dl.download = f.name;
+        dl.textContent = '⬇ Скачать';
+        const del = document.createElement('button');
+        del.className = 'del-btn';
+        del.title = 'Удалить файл';
+        del.textContent = '🗑';
+        del.addEventListener('click', async () => {
+          try {
+            const r = await fetch(`/claude/workspace/file/${f.rel_path}`, {
+              method: 'DELETE', headers: {'X-Token': token}
+            });
+            if (r.ok) {
+              row.style.opacity = '0.4';
+              row.style.textDecoration = 'line-through';
+              del.disabled = true;
+              console.debug('[output] deleted', f.rel_path);
+            }
+          } catch(e) { console.debug('[output] delete error', e.message); }
+        });
+        row.appendChild(nm);
+        row.appendChild(sz);
+        row.appendChild(dl);
+        row.appendChild(del);
+        tray.appendChild(row);
+      });
+
+      const bubble = msgEl.querySelector('.bubble');
+      if (bubble) bubble.after(tray);
+      else msgEl.appendChild(tray);
+    }
+
+    function addMsg(role, text = '', attachments = [], outputFiles = []) {
       const div = document.createElement('div');
       div.className = `msg ${role}`;
       if (attachments.length) {
@@ -908,6 +1035,9 @@ HTML = r"""<!DOCTYPE html>
         b.textContent = text;
       }
       div.appendChild(b);
+      if (role === 'assistant' && outputFiles.length) {
+        renderOutputFiles(div, outputFiles);
+      }
       messages.appendChild(div);
       messages.scrollTop = messages.scrollHeight;
       return b;
@@ -1074,6 +1204,10 @@ HTML = r"""<!DOCTYPE html>
                   const cls = data.terminal.startsWith('⚡') ? 'tool'
                             : data.terminal.startsWith('←') ? 'result' : 'other';
                   termAppend(data.terminal, cls);
+                }
+                if (data.output_files && data.output_files.length) {
+                  console.debug('[stream] output_files', data.output_files.length);
+                  renderOutputFiles(bubble.parentElement, data.output_files);
                 }
               } catch(_) {}
             }
@@ -1277,11 +1411,45 @@ async def serve_file(file_path: str, request: Request):
     return FileResponse(str(dest))
 
 
+@app.get("/claude/workspace/file/{file_path:path}")
+async def serve_workspace_file(file_path: str, request: Request):
+    if not _authorized(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    dest = (WORKSPACE_DIR / file_path).resolve()
+    try:
+        dest.relative_to(WORKSPACE_DIR.resolve())
+    except ValueError:
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    if not dest.exists() or not dest.is_file():
+        return JSONResponse({"error": "not found"}, status_code=404)
+    print(f"[DEBUG workspace] serving {dest}", flush=True)
+    return FileResponse(str(dest))
+
+
+@app.delete("/claude/workspace/file/{file_path:path}")
+async def delete_workspace_file(file_path: str, request: Request):
+    if not _authorized(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    dest = (WORKSPACE_DIR / file_path).resolve()
+    try:
+        dest.relative_to(WORKSPACE_DIR.resolve())
+    except ValueError:
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    if not dest.exists() or not dest.is_file():
+        return JSONResponse({"error": "not found"}, status_code=404)
+    size = dest.stat().st_size
+    dest.unlink()
+    print(f"[DEBUG workspace] deleted {dest} ({size}b)", flush=True)
+    return JSONResponse({"deleted": file_path})
+
+
 async def _anthropic_stream(prompt: str, augmented: str, image_attachments: list,
                             model: str, session_id: str, attachments: list):
     """Async SSE generator for multimodal messages.
     Uses claude CLI with --input-format stream-json so it can use its own credentials.
     """
+    ws_before = _snapshot_workspace()
+
     content: list = [{"type": "text", "text": augmented}]
     for a in image_attachments:
         fpath = Path(a.get("path", ""))
@@ -1393,12 +1561,19 @@ async def _anthropic_stream(prompt: str, augmented: str, image_attachments: list
             out_done = True
 
     await proc.wait()
+
+    ws_after = _snapshot_workspace()
+    output_files = _diff_workspace(ws_before, ws_after)
+    if output_files:
+        yield f"data: {json.dumps({'output_files': output_files})}\n\n"
+        print(f"[INFO multimodal] {len(output_files)} output file(s) detected", flush=True)
+
     yield f"data: {json.dumps({'done': True})}\n\n"
 
     assistant_text = (("[ERROR] " if is_error else "") + result_text) if result_text is not None else "".join(parts)
     if not final_sid:
         final_sid = f"img-{uuid.uuid4().hex[:12]}"
-    _upsert_session(final_sid, prompt, assistant_text, attachments=attachments)
+    _upsert_session(final_sid, prompt, assistant_text, attachments=attachments, output_files=output_files or None)
     print(f"[INFO multimodal] session saved sid={final_sid} text_len={len(assistant_text)}", flush=True)
 
 
@@ -1429,6 +1604,8 @@ async def ask(request: Request):
     # Build multimodal stdin payload when images are present
     async def stream():
         env = {**os.environ, "HOME": "/home/node"}
+
+        ws_before = _snapshot_workspace()
 
         # ── Text-only path — use claude CLI ────────────────────────────────
         cmd = ["claude", "-p", augmented, "--model", model,
@@ -1522,6 +1699,13 @@ async def ask(request: Request):
                 out_done = True
 
         await proc.wait()
+
+        ws_after = _snapshot_workspace()
+        output_files = _diff_workspace(ws_before, ws_after)
+        if output_files:
+            yield f"data: {json.dumps({'output_files': output_files})}\n\n"
+            print(f"[INFO stream] {len(output_files)} output file(s) detected", flush=True)
+
         yield f"data: {json.dumps({'done': True})}\n\n"
 
         if result_text is not None:
@@ -1536,7 +1720,8 @@ async def ask(request: Request):
             print(f"[WARN stream] no session_id received, using fallback sid={final_sid}", flush=True)
 
         if final_sid:
-            _upsert_session(final_sid, prompt, assistant_text, attachments=attachments)
+            _upsert_session(final_sid, prompt, assistant_text, attachments=attachments,
+                            output_files=output_files or None)
             print(f"[INFO stream] session saved sid={final_sid} text_len={len(assistant_text)} is_error={is_error} attachments={len(attachments)}", flush=True)
         asyncio.create_task(_git_push(env))
 
