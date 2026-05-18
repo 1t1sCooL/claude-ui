@@ -18,6 +18,7 @@ The whole project is one file (`app.py`, ~700 lines) plus a `Dockerfile`, three 
 - Session list with delete, persistent across reloads, tooltip on hover
 - **Collapsible sidebar** — click the chevron in the header or hit `Ctrl/Cmd + B`; collapsed state is remembered in `localStorage` (`claude_sidebar_collapsed`)
 - Model picker — Sonnet 4.6, Opus 4.7, Haiku 4.5
+- **Session management** — rename sessions (double-click title), search by title, archive instead of delete (with restore drawer), export any session as a Markdown file
 - **Markdown & code rendering** — assistant replies rendered as markdown with syntax-highlighted code blocks (highlight.js), one-click copy buttons, and Mermaid diagram support
 - **File & image upload** — drag-and-drop, file picker, or paste images/files into the composer; files are written to the workspace and referenced in the prompt so Claude can read them with its file tools
 - **Token-by-token streaming** — assistant replies appear word-by-word as Claude generates them (uses `--output-format stream-json`)
@@ -34,6 +35,9 @@ The whole project is one file (`app.py`, ~700 lines) plus a `Dockerfile`, three 
 | GET    | `/claude/sessions/{id}` | Get full session with messages |
 | DELETE | `/claude/sessions/{id}` | Delete a session |
 | POST   | `/claude/ask` | Send a prompt; returns an SSE stream of `text` (streaming deltas), `terminal`, `session_id`, `done` events |
+| PATCH  | `/claude/sessions/{id}` | Rename title `{title}` or restore from archive `{archived: false}` |
+| GET    | `/claude/sessions/{id}/export` | Download session as a Markdown file |
+| DELETE | `/claude/sessions/{id}/permanent` | Permanently delete an archived session |
 | POST   | `/claude/upload` | Upload files (multipart/form-data `files[]`); returns saved file metadata for use in `/claude/ask` |
 | GET    | `/claude/files/{path}` | Serve an uploaded file from the workspace |
 
@@ -102,7 +106,7 @@ Replace `IMAGE_TAG` in `k8s/deployment.yaml` with the image tag you pushed to GH
 
 ## Known gaps
 
-- Sessions can't be renamed or searched
+- Session search is title-only (no full-text message search)
 - No mobile / responsive layout
 - No file/image download from Claude's output (workspace browser planned)
 - No slash-command picker or skills browser
