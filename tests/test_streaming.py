@@ -88,7 +88,7 @@ class TestStreamJson(unittest.IsolatedAsyncioTestCase):
         fake_exec, _ = _make_stream(stdout_bytes, stderr_lines)
         saved = []
 
-        def fake_upsert(sid, user_msg, assistant_msg, attachments=None, output_files=None, sf=None):
+        def fake_upsert(sid, user_msg, assistant_msg, attachments=None, output_files=None, sf=None, usage=None):
             saved.append({"sid": sid, "user": user_msg, "assistant": assistant_msg})
 
         with patch("asyncio.create_subprocess_exec", new=fake_exec), \

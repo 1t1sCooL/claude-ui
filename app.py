@@ -24,6 +24,7 @@ if _raw_users:
 UPLOAD_DIR       = Path(os.environ.get("UPLOAD_DIR", "/home/node/workspace/.uploads"))
 WORKSPACE_DIR    = Path(os.environ.get("WORKSPACE_DIR", "/home/node/workspace"))
 COMMANDS_DIR     = Path(os.environ.get("COMMANDS_DIR", "/home/node/.claude/commands"))
+TEMPLATES_FILE   = Path(os.environ.get("TEMPLATES_FILE", "/home/node/templates.json"))
 # Colon-separated list of skill directories to scan
 SKILLS_DIRS      = [Path(p) for p in os.environ.get(
     "SKILLS_DIRS",
@@ -265,7 +266,8 @@ def _build_prompt(prompt: str, attachments: list[dict]) -> str:
 def _upsert_session(session_id: str, user_msg: str, assistant_msg: str,
                     attachments: Optional[list] = None,
                     output_files: Optional[list] = None,
-                    sf: Optional[Path] = None):
+                    sf: Optional[Path] = None,
+                    usage: Optional[dict] = None):
     sessions = _load_sessions(sf)
     now = datetime.utcnow().isoformat()
     user_record: dict = {"role": "user", "text": user_msg}
@@ -279,16 +281,21 @@ def _upsert_session(session_id: str, user_msg: str, assistant_msg: str,
         if s["session_id"] == session_id:
             s["updated_at"] = now
             s["messages"].extend([user_record, assistant_record])
+            if usage:
+                s["last_usage"] = usage
             _write_sessions(sessions, sf)
             return
     title = user_msg[:60] + ("…" if len(user_msg) > 60 else "")
-    sessions.insert(0, {
+    entry: dict = {
         "session_id": session_id,
         "title":      title,
         "created_at": now,
         "updated_at": now,
         "messages": [user_record, assistant_record],
-    })
+    }
+    if usage:
+        entry["last_usage"] = usage
+    sessions.insert(0, entry)
     _write_sessions(sessions, sf)
 
 
@@ -361,6 +368,27 @@ def _sessions_file(username: str = "default") -> Path:
         return SESSIONS_FILE
     safe = re.sub(r"[^\w\-]", "_", username)
     return SESSIONS_FILE.parent / f"sessions_{safe}.json"
+
+
+def _templates_file(username: str = "default") -> Path:
+    if not _USERS or username == "default":
+        return TEMPLATES_FILE
+    safe = re.sub(r"[^\w\-]", "_", username)
+    return TEMPLATES_FILE.parent / f"templates_{safe}.json"
+
+
+def _load_templates(tf: Optional[Path] = None) -> list:
+    f = tf or TEMPLATES_FILE
+    try:
+        return json.loads(f.read_text(encoding="utf-8")) if f.exists() else []
+    except Exception:
+        return []
+
+
+def _write_templates(templates: list, tf: Optional[Path] = None):
+    f = tf or TEMPLATES_FILE
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps(templates, ensure_ascii=False, indent=2))
 
 
 # ── HTML ──────────────────────────────────────────────────────────
@@ -717,6 +745,45 @@ HTML = r"""<!DOCTYPE html>
     #skills-toggle:hover,#skills-toggle.active{background:var(--bg4);color:var(--text)}
     #skills-toggle svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
 
+    /* ── Templates modal ───────────────────────────── */
+    #tpl-modal{position:fixed;inset:0;z-index:95;display:none;align-items:flex-end;justify-content:center;padding:0}
+    #tpl-modal.open{display:flex}
+    #tpl-backdrop{position:absolute;inset:0;background:rgba(0,0,0,.5);backdrop-filter:blur(3px)}
+    #tpl-sheet{position:relative;width:100%;max-width:640px;max-height:75vh;background:var(--bg2);border-radius:16px 16px 0 0;display:flex;flex-direction:column;z-index:1;box-shadow:0 -8px 40px var(--shadow)}
+    @media(min-width:640px){#tpl-sheet{border-radius:16px;margin-bottom:60px}}
+    #tpl-sheet-header{padding:14px 16px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-shrink:0}
+    #tpl-sheet-header h3{font-size:14px;font-weight:700;color:var(--text);flex:1}
+    #tpl-search{flex:1;background:var(--bg3);border:1px solid var(--border2);color:var(--text);padding:7px 12px;border-radius:8px;font-size:13px;outline:none;font-family:inherit}
+    #tpl-search:focus{border-color:var(--accent)}
+    #tpl-sheet-close{background:none;border:none;color:var(--text3);cursor:pointer;font-size:20px;padding:0 4px;line-height:1}
+    #tpl-sheet-close:hover{color:var(--text)}
+    #tpl-list{overflow-y:auto;padding:6px}
+    .tpl-item{display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border-radius:10px;cursor:pointer;transition:background .1s;border:1px solid transparent}
+    .tpl-item:hover{background:var(--bg3);border-color:var(--border2)}
+    .tpl-info{flex:1;min-width:0}
+    .tpl-name{font-size:13px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .tpl-preview{font-size:12px;color:var(--text3);margin-top:2px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;white-space:pre-wrap}
+    .tpl-actions{display:flex;gap:4px;flex-shrink:0;opacity:0;transition:opacity .15s}
+    .tpl-item:hover .tpl-actions{opacity:1}
+    .tpl-act{background:var(--bg4);border:1px solid var(--border2);color:var(--text3);border-radius:6px;padding:3px 8px;font-size:11px;cursor:pointer;transition:all .15s;font-family:inherit}
+    .tpl-act:hover{background:var(--accent);color:#fff;border-color:var(--accent)}
+    .tpl-act.del:hover{background:#ef4444;border-color:#ef4444;color:#fff}
+    #tpl-save-btn{background:var(--accent);border:none;color:#fff;padding:6px 14px;border-radius:8px;font-size:13px;cursor:pointer;font-weight:600;font-family:inherit;white-space:nowrap;transition:opacity .15s}
+    #tpl-save-btn:hover{opacity:.85}
+    #tpl-empty{padding:24px;text-align:center;color:var(--text3);font-size:13px}
+    #tpl-toggle{width:32px;height:32px;flex-shrink:0;background:var(--bg3);border:1px solid var(--border2);color:var(--text3);border-radius:8px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:background .15s,color .15s;margin-left:4px}
+    #tpl-toggle:hover,#tpl-toggle.active{background:var(--bg4);color:var(--text)}
+    #tpl-toggle svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+
+    /* ── Context window bar ─────────────────────────── */
+    #ctx-bar-wrap{display:none;align-items:center;gap:8px;padding:5px 14px 0;flex-shrink:0}
+    #ctx-bar-wrap.visible{display:flex}
+    #ctx-bar-track{flex:1;height:3px;background:var(--bg4);border-radius:2px;overflow:hidden}
+    #ctx-bar-fill{height:100%;width:0%;background:var(--accent);border-radius:2px;transition:width .4s ease,background .4s ease}
+    #ctx-bar-fill.warn{background:#f59e0b}
+    #ctx-bar-fill.danger{background:#ef4444}
+    #ctx-label{font-size:11px;color:var(--text4);white-space:nowrap;font-variant-numeric:tabular-nums}
+
     /* ── Mobile drawer ─────────────────────────────── */
     #mobile-menu-btn{display:none;width:36px;height:36px;flex-shrink:0;background:var(--bg3);border:1px solid var(--border2);color:var(--text3);border-radius:8px;cursor:pointer;align-items:center;justify-content:center;transition:background .15s,color .15s;order:-1}
     #mobile-menu-btn:hover{background:var(--bg4);color:var(--text)}
@@ -813,6 +880,9 @@ HTML = r"""<!DOCTYPE html>
       <button id="skills-toggle" title="Скиллы и команды" aria-label="Скиллы">
         <svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
       </button>
+      <button id="tpl-toggle" title="Шаблоны промптов (Ctrl+T)" aria-label="Шаблоны">
+        <svg viewBox="0 0 24 24"><path d="M19 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2z"/><path d="M9 9h6M9 12h6M9 15h4"/></svg>
+      </button>
       <button id="shortcuts-btn" title="Горячие клавиши" aria-label="Горячие клавиши" style="width:32px;height:32px;flex-shrink:0;background:var(--bg3);border:1px solid var(--border2);color:var(--text3);border-radius:8px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;margin-left:4px;transition:background .15s,color .15s;font-family:inherit">?</button>
     </div>
 
@@ -832,6 +902,10 @@ HTML = r"""<!DOCTYPE html>
     </div>
 
     <div id="footer">
+      <div id="ctx-bar-wrap">
+        <div id="ctx-bar-track"><div id="ctx-bar-fill"></div></div>
+        <span id="ctx-label">0 / 200k</span>
+      </div>
       <div id="slash-picker"></div>
       <input type="file" id="file-input" multiple style="display:none">
       <div id="attach-preview"></div>
@@ -850,6 +924,20 @@ HTML = r"""<!DOCTYPE html>
     </div>
   </div>
 
+  <!-- Templates modal -->
+  <div id="tpl-modal" role="dialog" aria-label="Шаблоны промптов">
+    <div id="tpl-backdrop"></div>
+    <div id="tpl-sheet">
+      <div id="tpl-sheet-header">
+        <h3>Шаблоны</h3>
+        <input id="tpl-search" type="text" placeholder="Поиск…" autocomplete="off">
+        <button id="tpl-save-btn" type="button">+ Сохранить текущий</button>
+        <button id="tpl-sheet-close" aria-label="Закрыть">×</button>
+      </div>
+      <div id="tpl-list"></div>
+    </div>
+  </div>
+
   <div id="shortcuts-modal">
     <div id="shortcuts-backdrop2"></div>
     <div id="shortcuts-sheet">
@@ -858,6 +946,7 @@ HTML = r"""<!DOCTYPE html>
       <div class="kbd-row"><span>Новый чат</span><kbd>Ctrl+K</kbd></div>
       <div class="kbd-row"><span>Свернуть сайдбар</span><kbd>Ctrl+B</kbd></div>
       <div class="kbd-row"><span>Скиллы</span><kbd>Ctrl+/</kbd></div>
+      <div class="kbd-row"><span>Шаблоны</span><kbd>Ctrl+T</kbd></div>
       <div class="kbd-row"><span>Файлы workspace</span><kbd>Ctrl+.</kbd></div>
       <div class="kbd-row"><span>Отправить сообщение</span><kbd>Enter</kbd></div>
       <div class="kbd-row"><span>Новая строка</span><kbd>Shift+Enter</kbd></div>
@@ -1268,10 +1357,16 @@ HTML = r"""<!DOCTYPE html>
           wsTogBtn.click();
           return;
         }
+        if (k === 't') {
+          e.preventDefault();
+          tplModal.classList.contains('open') ? closeTplModal() : openTplModal();
+          return;
+        }
       }
 
       // Escape — close open panels
       if (e.key === 'Escape') {
+        if (tplModal.classList.contains('open')) { closeTplModal(); return; }
         if (shortcutsModal && shortcutsModal.classList.contains('open')) { closeShortcuts(); return; }
         if (skillsModal.classList.contains('open')) { closeSkillsModal(); return; }
         if (wsPanel.classList.contains('open')) { wsPanel.classList.remove('open'); wsTogBtn.classList.remove('active'); return; }
@@ -1476,6 +1571,8 @@ HTML = r"""<!DOCTYPE html>
         scrollBtn.classList.remove('visible');
         messages.scrollTop = messages.scrollHeight;
         termClear();
+        if (s.last_usage) updateCtxBar(s.last_usage.input_tokens);
+        else resetCtxBar();
       } catch(e) {}
     }
 
@@ -1717,6 +1814,150 @@ HTML = r"""<!DOCTYPE html>
     document.getElementById('skills-backdrop').addEventListener('click', closeSkillsModal);
     skillsSearch.addEventListener('input', () => renderSkills(skillsSearch.value));
 
+    // ── Prompt Templates ──────────────────────────────────
+    const tplModal   = document.getElementById('tpl-modal');
+    const tplList    = document.getElementById('tpl-list');
+    const tplSearch  = document.getElementById('tpl-search');
+    const tplTogBtn  = document.getElementById('tpl-toggle');
+    let allTemplates = [];
+
+    async function loadTemplates() {
+      try {
+        const r = await fetch('/claude/templates', { headers: {'X-Token': token} });
+        if (r.ok) { allTemplates = (await r.json()).templates || []; }
+      } catch(e) {}
+    }
+
+    function renderTemplates(query) {
+      const q = (query || '').toLowerCase().trim();
+      const items = q ? allTemplates.filter(t =>
+        t.name.toLowerCase().includes(q) || t.text.toLowerCase().includes(q)
+      ) : allTemplates;
+      tplList.innerHTML = '';
+      if (!items.length) {
+        const empty = document.createElement('div');
+        empty.id = 'tpl-empty';
+        empty.textContent = q ? 'Ничего не найдено' : 'Нет шаблонов. Напишите промпт и нажмите «+ Сохранить текущий»';
+        tplList.appendChild(empty);
+        return;
+      }
+      items.forEach(t => {
+        const item = document.createElement('div');
+        item.className = 'tpl-item';
+        const info = document.createElement('div');
+        info.className = 'tpl-info';
+        const name = document.createElement('div');
+        name.className = 'tpl-name';
+        name.textContent = t.name;
+        const prev = document.createElement('div');
+        prev.className = 'tpl-preview';
+        prev.textContent = t.text;
+        info.append(name, prev);
+        const acts = document.createElement('div');
+        acts.className = 'tpl-actions';
+        const editBtn = document.createElement('button');
+        editBtn.className = 'tpl-act';
+        editBtn.textContent = 'Изменить';
+        editBtn.addEventListener('click', e => { e.stopPropagation(); editTemplate(t); });
+        const delBtn = document.createElement('button');
+        delBtn.className = 'tpl-act del';
+        delBtn.textContent = 'Удалить';
+        delBtn.addEventListener('click', async e => {
+          e.stopPropagation();
+          if (!confirm(`Удалить шаблон «${t.name}»?`)) return;
+          await fetch(`/claude/templates/${t.id}`, { method: 'DELETE', headers: {'X-Token': token} });
+          allTemplates = allTemplates.filter(x => x.id !== t.id);
+          renderTemplates(tplSearch.value);
+        });
+        acts.append(editBtn, delBtn);
+        item.append(info, acts);
+        item.addEventListener('click', () => {
+          input.value = t.text;
+          input.dispatchEvent(new Event('input'));
+          closeTplModal();
+          input.focus();
+        });
+        tplList.appendChild(item);
+      });
+    }
+
+    async function editTemplate(t) {
+      const newName = prompt('Название шаблона:', t.name);
+      if (newName === null) return;
+      const newText = prompt('Текст шаблона:', t.text);
+      if (newText === null) return;
+      const r = await fetch(`/claude/templates/${t.id}`, {
+        method: 'PATCH', headers: {'Content-Type':'application/json','X-Token':token},
+        body: JSON.stringify({name: newName.trim(), text: newText}),
+      });
+      if (r.ok) {
+        const updated = await r.json();
+        const idx = allTemplates.findIndex(x => x.id === t.id);
+        if (idx !== -1) allTemplates[idx] = updated;
+        renderTemplates(tplSearch.value);
+      }
+    }
+
+    function openTplModal() {
+      loadTemplates().then(() => renderTemplates(''));
+      tplModal.classList.add('open');
+      tplTogBtn.classList.add('active');
+      tplSearch.value = '';
+      setTimeout(() => tplSearch.focus(), 80);
+    }
+
+    function closeTplModal() {
+      tplModal.classList.remove('open');
+      tplTogBtn.classList.remove('active');
+    }
+
+    tplTogBtn.addEventListener('click', () => tplModal.classList.contains('open') ? closeTplModal() : openTplModal());
+    document.getElementById('tpl-sheet-close').addEventListener('click', closeTplModal);
+    document.getElementById('tpl-backdrop').addEventListener('click', closeTplModal);
+    tplSearch.addEventListener('input', () => renderTemplates(tplSearch.value));
+
+    document.getElementById('tpl-save-btn').addEventListener('click', async () => {
+      const text = input.value.trim();
+      if (!text) { showToast('Напишите промпт, чтобы сохранить его как шаблон', 'info'); return; }
+      const name = prompt('Название шаблона:');
+      if (!name || !name.trim()) return;
+      const r = await fetch('/claude/templates', {
+        method: 'POST', headers: {'Content-Type':'application/json','X-Token':token},
+        body: JSON.stringify({name: name.trim(), text}),
+      });
+      if (r.ok) {
+        const tpl = await r.json();
+        allTemplates.unshift(tpl);
+        renderTemplates(tplSearch.value);
+        showToast('Шаблон сохранён', 'success');
+      }
+    });
+
+    // ── Context Window Indicator ──────────────────────────
+    const ctxBarWrap  = document.getElementById('ctx-bar-wrap');
+    const ctxBarFill  = document.getElementById('ctx-bar-fill');
+    const ctxLabel    = document.getElementById('ctx-label');
+    const CTX_LIMIT   = 200000;
+
+    function updateCtxBar(inputTokens) {
+      if (!inputTokens) return;
+      const pct = Math.min(100, (inputTokens / CTX_LIMIT) * 100);
+      ctxBarWrap.classList.add('visible');
+      ctxBarFill.style.width = pct + '%';
+      ctxBarFill.classList.toggle('warn', pct >= 50 && pct < 80);
+      ctxBarFill.classList.toggle('danger', pct >= 80);
+      ctxBarFill.classList.toggle('accent', pct < 50);
+      const kIn = Math.round(inputTokens / 100) / 10;
+      ctxLabel.textContent = `${kIn}k / 200k`;
+    }
+
+    function resetCtxBar() {
+      ctxBarWrap.classList.remove('visible');
+      ctxBarFill.style.width = '0%';
+      ctxBarFill.className = '';
+      ctxLabel.textContent = '0 / 200k';
+    }
+
     // ── Shortcuts modal ───────────────────────────────────
     const shortcutsModal = document.getElementById('shortcuts-modal');
     function openShortcuts() { shortcutsModal.classList.add('open'); }
@@ -1885,6 +2126,7 @@ HTML = r"""<!DOCTYPE html>
       await loadSessions();
       await loadArchivedSessions();
       loadCommands();
+      loadTemplates();
       if (sessionId) await openSession(sessionId);
       input.focus();
     }
@@ -1898,6 +2140,7 @@ HTML = r"""<!DOCTYPE html>
       localStorage.removeItem(SESSION_KEY);
       messages.innerHTML = '<div class="msg assistant"><div class="bubble">Привет! Чем могу помочь?</div></div>';
       termClear();
+      resetCtxBar();
       document.querySelectorAll('.session-item').forEach(el => el.classList.remove('active'));
       input.focus();
     });
@@ -2517,6 +2760,9 @@ HTML = r"""<!DOCTYPE html>
                 if (data.output_files && data.output_files.length) {
                   renderOutputFiles(bubble.parentElement, data.output_files);
                 }
+                if (data.usage) {
+                  updateCtxBar(data.usage.input_tokens);
+                }
               } catch(_) {}
             }
           }
@@ -2823,6 +3069,67 @@ async def export_session(session_id: str, request: Request, format: str = "md"):
     return JSONResponse({"error": "not found"}, status_code=404)
 
 
+@app.get("/claude/templates")
+async def get_templates(request: Request):
+    user = _authorized_user(request)
+    if user is None:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    tf = _templates_file(user)
+    return JSONResponse({"templates": _load_templates(tf)})
+
+
+@app.post("/claude/templates")
+async def create_template(request: Request):
+    user = _authorized_user(request)
+    if user is None:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    body = await request.json()
+    name = (body.get("name") or "").strip()
+    text = (body.get("text") or "").strip()
+    if not name or not text:
+        return JSONResponse({"error": "name and text required"}, status_code=400)
+    tf = _templates_file(user)
+    templates = _load_templates(tf)
+    tpl = {"id": uuid.uuid4().hex, "name": name, "text": text,
+           "created_at": datetime.utcnow().isoformat()}
+    templates.insert(0, tpl)
+    _write_templates(templates, tf)
+    return JSONResponse(tpl)
+
+
+@app.patch("/claude/templates/{tid}")
+async def update_template(request: Request, tid: str):
+    user = _authorized_user(request)
+    if user is None:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    body = await request.json()
+    tf = _templates_file(user)
+    templates = _load_templates(tf)
+    for t in templates:
+        if t["id"] == tid:
+            if "name" in body:
+                t["name"] = (body["name"] or "").strip()
+            if "text" in body:
+                t["text"] = body["text"]
+            _write_templates(templates, tf)
+            return JSONResponse(t)
+    return JSONResponse({"error": "not found"}, status_code=404)
+
+
+@app.delete("/claude/templates/{tid}")
+async def delete_template(request: Request, tid: str):
+    user = _authorized_user(request)
+    if user is None:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    tf = _templates_file(user)
+    templates = _load_templates(tf)
+    new = [t for t in templates if t["id"] != tid]
+    if len(new) == len(templates):
+        return JSONResponse({"error": "not found"}, status_code=404)
+    _write_templates(new, tf)
+    return JSONResponse({"ok": True})
+
+
 @app.get("/claude/commands")
 async def get_commands(request: Request):
     if not _authorized(request):
@@ -3107,6 +3414,7 @@ async def _anthropic_stream(prompt: str, augmented: str, image_attachments: list
     parts: list[str] = []
     result_text: str | None = None  # type: ignore[assignment]
     is_error = False
+    final_usage: Optional[dict] = None
     q: asyncio.Queue = asyncio.Queue()
 
     async def _stderr():
@@ -3145,6 +3453,7 @@ async def _anthropic_stream(prompt: str, augmented: str, image_attachments: list
                     "text": ev.get("result", ""),
                     "sid": ev.get("session_id", ""),
                     "is_error": ev.get("is_error", False),
+                    "usage": ev.get("usage"),
                 }))
         await q.put(("out_done", ""))
 
@@ -3167,6 +3476,9 @@ async def _anthropic_stream(prompt: str, augmented: str, image_attachments: list
         elif kind == "result":
             result_text = val["text"]
             is_error = val.get("is_error", False)
+            if val.get("usage"):
+                final_usage = val["usage"]
+                yield f"data: {json.dumps({'usage': final_usage})}\n\n"
             if val["sid"] and not final_sid:
                 final_sid = val["sid"]
                 yield f"data: {json.dumps({'session_id': val['sid']})}\n\n"
@@ -3187,7 +3499,8 @@ async def _anthropic_stream(prompt: str, augmented: str, image_attachments: list
     if not final_sid:
         final_sid = f"img-{uuid.uuid4().hex[:12]}"
     _active_streams.pop(stream_id, None)
-    _upsert_session(final_sid, prompt, assistant_text, attachments=attachments, output_files=output_files or None, sf=sf)
+    _upsert_session(final_sid, prompt, assistant_text, attachments=attachments,
+                    output_files=output_files or None, sf=sf, usage=final_usage)
     print(f"[INFO multimodal] session saved sid={final_sid} text_len={len(assistant_text)}", flush=True)
 
 
@@ -3290,6 +3603,7 @@ async def ask(request: Request):
                         "text":     event.get("result", ""),
                         "sid":      event.get("session_id", ""),
                         "is_error": event.get("is_error", False),
+                        "usage":    event.get("usage"),
                     }))
             await q.put(("out_done", ""))
 
@@ -3298,6 +3612,7 @@ async def ask(request: Request):
 
         t_done = False
         out_done = False
+        final_usage: Optional[dict] = None
         while not (t_done and out_done):
             kind, val = await q.get()
             if kind == "t":
@@ -3313,6 +3628,9 @@ async def ask(request: Request):
             elif kind == "result":
                 result_text = val["text"]
                 is_error = val.get("is_error", False)
+                if val.get("usage"):
+                    final_usage = val["usage"]
+                    yield f"data: {json.dumps({'usage': final_usage})}\n\n"
                 if val["sid"] and not final_sid:
                     final_sid = val["sid"]
                     yield f"data: {json.dumps({'session_id': val['sid']})}\n\n"
@@ -3342,7 +3660,7 @@ async def ask(request: Request):
 
         if final_sid:
             _upsert_session(final_sid, prompt, assistant_text, attachments=attachments,
-                            output_files=output_files or None, sf=sf)
+                            output_files=output_files or None, sf=sf, usage=final_usage)
             print(f"[INFO stream] session saved sid={final_sid} text_len={len(assistant_text)} is_error={is_error} attachments={len(attachments)}", flush=True)
         _active_streams.pop(stream_id, None)
         asyncio.create_task(_git_push(env))
