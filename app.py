@@ -754,7 +754,7 @@ HTML = r"""<!DOCTYPE html>
         <button type="button" id="attach-btn" title="Прикрепить файл (или перетащи / вставь)">
           <svg viewBox="0 0 24 24"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
         </button>
-        <textarea id="input" rows="1" placeholder="Напиши сообщение..."></textarea>
+        <textarea id="input" rows="1" placeholder="Напиши сообщение... (Ctrl+V для вставки скриншота)"></textarea>
         <button id="send" type="submit">
           <svg viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
         </button>
@@ -1982,7 +1982,31 @@ HTML = r"""<!DOCTYPE html>
       if (e.dataTransfer.files.length) handleFiles(e.dataTransfer.files);
     });
     document.addEventListener('paste', e => {
-      if (e.clipboardData.files.length) { e.preventDefault(); handleFiles(e.clipboardData.files); }
+      // Handle files copied from filesystem (have real paths)
+      if (e.clipboardData.files.length) {
+        e.preventDefault();
+        handleFiles(e.clipboardData.files);
+        return;
+      }
+      // Handle screenshots and image blobs from clipboard items
+      const imageFiles = [];
+      for (const item of (e.clipboardData.items || [])) {
+        if (item.kind === 'file' && item.type.startsWith('image/')) {
+          const blob = item.getAsFile();
+          if (!blob) continue;
+          const ext = item.type.split('/')[1] || 'png';
+          const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+          // Rename blob to a meaningful filename since screenshots lack one
+          const named = new File([blob], `screenshot-${ts}.${ext}`, {type: item.type});
+          imageFiles.push(named);
+        }
+      }
+      if (imageFiles.length) {
+        e.preventDefault();
+        handleFiles(imageFiles);
+        showToast(`Вставлено ${imageFiles.length} изображение(й) из буфера`, 'success', 2500);
+        console.debug('[paste] pasted', imageFiles.length, 'image(s) from clipboard');
+      }
     });
 
     // ── Chat ───────────────────────────────────────────
