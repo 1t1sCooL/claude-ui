@@ -196,7 +196,7 @@ HTML = r"""<!DOCTYPE html>
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Claude</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css">
-  <script src="https://cdn.jsdelivr.net/npm/marked@13/marked.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked@9/marked.min.js"></script>
   <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js" defer></script>
   <style>
@@ -442,16 +442,17 @@ HTML = r"""<!DOCTYPE html>
 
   <script>
     // ── Markdown rendering ─────────────────────────────
+    let _mdReady = false;
+
     function initMarkdown() {
+      if (_mdReady) return;
       if (typeof marked === 'undefined') {
-        console.debug('[md] marked not loaded, markdown disabled');
+        console.debug('[md] marked not loaded yet');
         return;
       }
       const renderer = new marked.Renderer();
-      const origCode = renderer.code.bind(renderer);
-      renderer.code = function(token) {
-        const code = typeof token === 'object' ? token.text : token;
-        const lang = typeof token === 'object' ? token.lang : arguments[1];
+      // marked@9: code(code, language, isEscaped)
+      renderer.code = function(code, lang) {
         if (lang === 'mermaid') {
           return `<div class="mermaid-block">${code}</div>`;
         }
@@ -459,19 +460,27 @@ HTML = r"""<!DOCTYPE html>
           const highlighted = hljs.highlight(code, {language: lang, ignoreIllegals: true}).value;
           return `<pre><code class="hljs language-${lang}">${highlighted}</code></pre>`;
         }
-        const highlighted = typeof hljs !== 'undefined' ? hljs.highlightAuto(code).value : code.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        const highlighted = typeof hljs !== 'undefined'
+          ? hljs.highlightAuto(code).value
+          : code.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
         return `<pre><code class="hljs">${highlighted}</code></pre>`;
       };
-      marked.use({ renderer, breaks: true, gfm: true });
+      marked.setOptions({ renderer, breaks: true, gfm: true });
       if (typeof mermaid !== 'undefined') {
         mermaid.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'loose' });
       }
+      _mdReady = true;
       console.debug('[md] markdown renderer initialized');
     }
+
+    // Try on DOMContentLoaded; if CDN was slow, retry lazily in renderMarkdown
     document.addEventListener('DOMContentLoaded', initMarkdown);
 
     function renderMarkdown(text) {
-      if (typeof marked === 'undefined') return text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      if (!_mdReady) initMarkdown();
+      if (typeof marked === 'undefined') {
+        return text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      }
       try {
         const html = marked.parse(text);
         console.debug('[md] rendered', text.length, '→', html.length, 'chars');
