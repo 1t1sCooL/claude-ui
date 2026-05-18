@@ -590,8 +590,10 @@ HTML = r"""<!DOCTYPE html>
     #workspace-panel.open{display:flex}
     #ws-header{padding:10px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:6px;flex-shrink:0}
     #ws-header span{font-size:13px;font-weight:600;color:var(--text);flex:1}
-    #ws-refresh,#ws-close{background:none;border:none;color:var(--text3);cursor:pointer;font-size:16px;padding:2px 6px;border-radius:5px;line-height:1;transition:color .15s,background .15s}
-    #ws-refresh:hover,#ws-close:hover{color:var(--text);background:var(--bg4)}
+    #ws-refresh,#ws-close,#ws-zip{background:none;border:none;color:var(--text3);cursor:pointer;font-size:13px;padding:2px 7px;border-radius:5px;line-height:1.4;transition:color .15s,background .15s;font-family:inherit}
+    #ws-refresh:hover,#ws-close:hover,#ws-zip:hover{color:var(--text);background:var(--bg4)}
+    #ws-refresh{font-size:16px}
+    #ws-close{font-size:18px}
     #ws-upload-zone{margin:8px 10px;border:1.5px dashed var(--border2);border-radius:10px;padding:10px;font-size:12px;color:var(--text3);text-align:center;cursor:pointer;transition:border-color .15s,background .15s;flex-shrink:0}
     #ws-upload-zone:hover,#ws-upload-zone.drag-over{border-color:var(--accent);background:var(--accent-glow);color:var(--text2)}
     #ws-upload-zone label{color:var(--accent);cursor:pointer;text-decoration:underline}
@@ -833,6 +835,7 @@ HTML = r"""<!DOCTYPE html>
     <div id="ws-header">
       <span>📁 Workspace</span>
       <button id="ws-refresh" title="Обновить">↻</button>
+      <button id="ws-zip" title="Скачать workspace как ZIP">⬇ ZIP</button>
       <button id="ws-close" title="Закрыть">×</button>
     </div>
     <div id="ws-upload-zone">
@@ -1769,6 +1772,26 @@ HTML = r"""<!DOCTYPE html>
     });
 
     document.getElementById('ws-refresh').addEventListener('click', loadWorkspaceTree);
+
+    document.getElementById('ws-zip').addEventListener('click', async () => {
+      const btn = document.getElementById('ws-zip');
+      btn.textContent = '⏳';
+      btn.disabled = true;
+      try {
+        const r = await fetch('/claude/workspace/zip', { headers: {'X-Token': token} });
+        if (!r.ok) { showToast('Ошибка создания ZIP', 'error'); return; }
+        const blob = await r.blob();
+        const fname = (r.headers.get('content-disposition') || '').match(/filename="([^"]+)"/)?.[1] || 'workspace.zip';
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = fname;
+        a.click();
+        URL.revokeObjectURL(a.href);
+        showToast('ZIP скачан', 'success', 2500);
+        console.debug('[ws-zip] downloaded', fname);
+      } catch(e) { showToast('Ошибка: ' + e.message, 'error'); }
+      finally { btn.textContent = '⬇ ZIP'; btn.disabled = false; }
+    });
 
     wsInput.addEventListener('change', () => { if (wsInput.files.length) wsUploadFiles(wsInput.files, ''); wsInput.value = ''; });
     wsUpload.addEventListener('click', () => wsInput.click());
@@ -2801,6 +2824,39 @@ def _workspace_tree(base: Path, rel: str = "", depth: int = 0, max_depth: int = 
     dirs  = sum(1 for c in node["children"] if c["type"] == "dir")
     print(f"[DEBUG tree] {rel or '/'}: {dirs} dirs, {files} files", flush=True)
     return node
+
+
+@app.get("/claude/workspace/zip")
+async def workspace_zip(request: Request):
+    if not _authorized(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import io, zipfile
+    from datetime import datetime as _dt
+    from fastapi.responses import StreamingResponse as _SR
+    buf = io.BytesIO()
+    total = 0
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        if WORKSPACE_DIR.exists():
+            for p in WORKSPACE_DIR.rglob("*"):
+                if not p.is_file():
+                    continue
+                rel = p.relative_to(WORKSPACE_DIR)
+                parts = rel.parts
+                if parts and (parts[0] == ".uploads" or parts[0].startswith(".")):
+                    continue
+                try:
+                    zf.write(p, rel)
+                    total += 1
+                except Exception as e:
+                    print(f"[WARN zip] skipped {p}: {e}", flush=True)
+    buf.seek(0)
+    fname = f"workspace-{_dt.utcnow().strftime('%Y%m%d-%H%M%S')}.zip"
+    print(f"[INFO zip] created {fname} with {total} files ({buf.getbuffer().nbytes} bytes)", flush=True)
+    return _SR(
+        content=buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
 
 
 @app.get("/claude/workspace/tree")
