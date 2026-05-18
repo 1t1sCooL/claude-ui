@@ -19,6 +19,9 @@ SKILLS_DIRS      = [Path(p) for p in os.environ.get(
     "/home/node/.claude/skills:/app/.claude/skills"
 ).split(":") if p]
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024  # 20 MB
+_CACHE_TTL = 30  # seconds — commands/skills cache TTL
+_commands_cache: tuple = ([], 0.0)
+_skills_cache: tuple    = ([], 0.0)
 
 
 def _parse_skill_frontmatter(text: str) -> dict:
@@ -46,7 +49,12 @@ def _parse_skill_frontmatter(text: str) -> dict:
 
 
 def _load_skills() -> list:
-    """Scan SKILLS_DIRS for skill subdirectories with SKILL.md files."""
+    """Scan SKILLS_DIRS for skill subdirectories with SKILL.md files. Results cached for _CACHE_TTL seconds."""
+    import time
+    global _skills_cache
+    cached, ts = _skills_cache
+    if cached and (time.monotonic() - ts) < _CACHE_TTL:
+        return cached
     seen: set = set()
     result = []
     for base in SKILLS_DIRS:
@@ -79,6 +87,8 @@ def _load_skills() -> list:
         except Exception as e:
             print(f"[WARN skills] failed to scan {base}: {e}", flush=True)
     print(f"[DEBUG skills] found {len(result)} skill(s) across {len(SKILLS_DIRS)} dir(s)", flush=True)
+    import time
+    _skills_cache = (result, time.monotonic())
     return result
 
 _BUILTIN_COMMANDS = [
@@ -98,7 +108,12 @@ _BUILTIN_COMMANDS = [
 
 
 def _load_commands() -> list:
-    """Return built-in commands + custom commands from COMMANDS_DIR."""
+    """Return built-in commands + custom commands from COMMANDS_DIR. Results cached for _CACHE_TTL seconds."""
+    import time
+    global _commands_cache
+    cached, ts = _commands_cache
+    if cached and (time.monotonic() - ts) < _CACHE_TTL:
+        return cached
     result = list(_BUILTIN_COMMANDS)
     if COMMANDS_DIR.exists() and COMMANDS_DIR.is_dir():
         custom = []
@@ -122,6 +137,8 @@ def _load_commands() -> list:
     else:
         print(f"[DEBUG commands] COMMANDS_DIR not found: {COMMANDS_DIR}", flush=True)
     print(f"[DEBUG commands] total {len(result)} commands ({len(_BUILTIN_COMMANDS)} builtin)", flush=True)
+    import time
+    _commands_cache = (result, time.monotonic())
     return result
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".ico"}
@@ -2226,6 +2243,8 @@ async def delete_workspace_file(file_path: str, request: Request):
     return JSONResponse({"deleted": file_path})
 
 
+_MAX_TREE_CHILDREN = 200  # max items per directory level in tree response
+
 def _workspace_tree(base: Path, rel: str = "", depth: int = 0, max_depth: int = 6) -> dict:
     """Recursively build workspace directory tree."""
     name = base.name
@@ -2234,9 +2253,14 @@ def _workspace_tree(base: Path, rel: str = "", depth: int = 0, max_depth: int = 
         return node
     try:
         entries = sorted(base.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
+        count = 0
         for p in entries:
             if p.name.startswith("."):
                 continue
+            if count >= _MAX_TREE_CHILDREN:
+                node["truncated"] = True
+                print(f"[WARN tree] {rel or '/'}: truncated at {_MAX_TREE_CHILDREN} items", flush=True)
+                break
             child_rel = (rel + "/" + p.name).lstrip("/")
             if p.is_dir():
                 node["children"].append(_workspace_tree(p, child_rel, depth + 1, max_depth))
@@ -2254,6 +2278,7 @@ def _workspace_tree(base: Path, rel: str = "", depth: int = 0, max_depth: int = 
                     "is_image": ext in _IMAGE_EXTS,
                     "size": size,
                 })
+            count += 1
     except PermissionError:
         pass
     files = sum(1 for c in node["children"] if c["type"] == "file")
@@ -2312,7 +2337,7 @@ async def _anthropic_stream(prompt: str, augmented: str, image_attachments: list
     """Async SSE generator for multimodal messages.
     Uses claude CLI with --input-format stream-json so it can use its own credentials.
     """
-    ws_before = _snapshot_workspace()
+    ws_before = await asyncio.to_thread(_snapshot_workspace)
 
     content: list = [{"type": "text", "text": augmented}]
     for a in image_attachments:
@@ -2426,7 +2451,7 @@ async def _anthropic_stream(prompt: str, augmented: str, image_attachments: list
 
     await proc.wait()
 
-    ws_after = _snapshot_workspace()
+    ws_after = await asyncio.to_thread(_snapshot_workspace)
     output_files = _diff_workspace(ws_before, ws_after)
     if output_files:
         yield f"data: {json.dumps({'output_files': output_files})}\n\n"
@@ -2469,7 +2494,7 @@ async def ask(request: Request):
     async def stream():
         env = {**os.environ, "HOME": "/home/node"}
 
-        ws_before = _snapshot_workspace()
+        ws_before = await asyncio.to_thread(_snapshot_workspace)
 
         # ── Text-only path — use claude CLI ────────────────────────────────
         cmd = ["claude", "-p", augmented, "--model", model,
@@ -2564,7 +2589,7 @@ async def ask(request: Request):
 
         await proc.wait()
 
-        ws_after = _snapshot_workspace()
+        ws_after = await asyncio.to_thread(_snapshot_workspace)
         output_files = _diff_workspace(ws_before, ws_after)
         if output_files:
             yield f"data: {json.dumps({'output_files': output_files})}\n\n"
