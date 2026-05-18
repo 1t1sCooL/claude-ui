@@ -1279,9 +1279,9 @@ async def serve_file(file_path: str, request: Request):
 
 async def _anthropic_stream(prompt: str, augmented: str, image_attachments: list,
                             model: str, session_id: str, attachments: list):
-    """Async SSE generator using Anthropic SDK — handles multimodal image messages."""
-    import anthropic as _anth
-
+    """Async SSE generator for multimodal messages.
+    Uses claude CLI with --input-format stream-json so it can use its own credentials.
+    """
     content: list = [{"type": "text", "text": augmented}]
     for a in image_attachments:
         fpath = Path(a.get("path", ""))
@@ -1292,46 +1292,114 @@ async def _anthropic_stream(prompt: str, augmented: str, image_attachments: list
                 content.append({"type": "image", "source": {
                     "type": "base64", "media_type": mime, "data": b64,
                 }})
-                print(f"[DEBUG anthropic] encoded {fpath.name} ({len(b64)} b64 chars)", flush=True)
+                print(f"[DEBUG multimodal] encoded {fpath.name} ({len(b64)} b64 chars)", flush=True)
             except Exception as e:
-                print(f"[WARN anthropic] failed to encode {fpath}: {e}", flush=True)
+                print(f"[WARN multimodal] failed to encode {fpath}: {e}", flush=True)
 
-    # Map claude model names to Anthropic API model IDs
-    _model_map = {
-        "claude-sonnet-4-6": "claude-sonnet-4-5",
-        "claude-opus-4-7":   "claude-opus-4-5",
-        "claude-haiku-4-5-20251001": "claude-haiku-4-5",
-    }
-    api_model = _model_map.get(model, model)
+    # Pass message as stream-json event via stdin; claude CLI uses its own credentials
+    stdin_data = (json.dumps({
+        "type": "user",
+        "message": {"role": "user", "content": content},
+    }) + "\n").encode()
 
-    client = _anth.AsyncAnthropic()
-    final_sid = session_id or f"img-{uuid.uuid4().hex[:12]}"
-    full_text: list[str] = []
+    env = {**os.environ, "HOME": "/home/node"}
+    cmd = ["claude", "--model", model,
+           "--dangerously-skip-permissions", "--max-turns", "20",
+           "--output-format", "stream-json", "--verbose",
+           "--input-format", "stream-json"]
+    if session_id:
+        cmd += ["--resume", session_id]
 
-    try:
-        print(f"[DEBUG anthropic] streaming model={api_model} content_parts={len(content)}", flush=True)
-        yield f"data: {json.dumps({'session_id': final_sid})}\n\n"
+    print(f"[DEBUG multimodal] launching CLI content_parts={len(content)}", flush=True)
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=env,
+    )
+    proc.stdin.write(stdin_data)
+    await proc.stdin.drain()
+    proc.stdin.close()
 
-        async with client.messages.stream(
-            model=api_model,
-            max_tokens=8192,
-            messages=[{"role": "user", "content": content}],
-        ) as stream_ctx:
-            async for delta in stream_ctx.text_stream:
-                full_text.append(delta)
-                yield f"data: {json.dumps({'text': delta})}\n\n"
+    final_sid = session_id
+    parts: list[str] = []
+    result_text: str | None = None  # type: ignore[assignment]
+    is_error = False
+    q: asyncio.Queue = asyncio.Queue()
 
-        print(f"[DEBUG anthropic] done text_len={sum(len(t) for t in full_text)}", flush=True)
-    except Exception as e:
-        err = f"[ERROR] Anthropic API: {e}"
-        full_text.append(err)
-        print(f"[ERROR anthropic] {e}", flush=True)
-        yield f"data: {json.dumps({'text': err})}\n\n"
+    async def _stderr():
+        async for raw in proc.stderr:
+            line = raw.decode("utf-8", errors="replace").strip()
+            if line:
+                await q.put(("t", line))
+        await q.put(("t_done", ""))
 
+    async def _stdout():
+        prev_len = 0
+        async for raw in proc.stdout:
+            line = raw.decode("utf-8", errors="replace").strip()
+            if not line:
+                continue
+            try:
+                ev = json.loads(line)
+            except Exception:
+                continue
+            etype = ev.get("type", "")
+            if etype == "system":
+                sid = ev.get("session_id", "")
+                if sid:
+                    await q.put(("sid", sid))
+            elif etype == "assistant":
+                txt = ""
+                for c in ev.get("message", {}).get("content", []):
+                    if isinstance(c, dict) and c.get("type") == "text":
+                        txt = c.get("text", "")
+                delta = txt[prev_len:]
+                if delta:
+                    await q.put(("delta", delta))
+                    prev_len = len(txt)
+            elif etype == "result":
+                await q.put(("result", {
+                    "text": ev.get("result", ""),
+                    "sid": ev.get("session_id", ""),
+                    "is_error": ev.get("is_error", False),
+                }))
+        await q.put(("out_done", ""))
+
+    asyncio.create_task(_stderr())
+    asyncio.create_task(_stdout())
+
+    t_done = out_done = False
+    while not (t_done and out_done):
+        kind, val = await q.get()
+        if kind == "t":
+            yield f"data: {json.dumps({'terminal': val})}\n\n"
+        elif kind == "t_done":
+            t_done = True
+        elif kind == "sid":
+            final_sid = val
+            yield f"data: {json.dumps({'session_id': val})}\n\n"
+        elif kind == "delta":
+            parts.append(val)
+            yield f"data: {json.dumps({'text': val})}\n\n"
+        elif kind == "result":
+            result_text = val["text"]
+            is_error = val.get("is_error", False)
+            if val["sid"] and not final_sid:
+                final_sid = val["sid"]
+                yield f"data: {json.dumps({'session_id': val['sid']})}\n\n"
+        elif kind == "out_done":
+            out_done = True
+
+    await proc.wait()
     yield f"data: {json.dumps({'done': True})}\n\n"
-    assistant_text = "".join(full_text)
+
+    assistant_text = (("[ERROR] " if is_error else "") + result_text) if result_text is not None else "".join(parts)
+    if not final_sid:
+        final_sid = f"img-{uuid.uuid4().hex[:12]}"
     _upsert_session(final_sid, prompt, assistant_text, attachments=attachments)
-    print(f"[INFO anthropic] session saved sid={final_sid} text_len={len(assistant_text)}", flush=True)
+    print(f"[INFO multimodal] session saved sid={final_sid} text_len={len(assistant_text)}", flush=True)
 
 
 @app.post("/claude/ask")
