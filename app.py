@@ -1,15 +1,30 @@
-import asyncio, json, os, hmac, hashlib
+import asyncio, json, os, hmac, hashlib, re, uuid
 from datetime import datetime
 from pathlib import Path
-from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
+from typing import Optional
+from fastapi import FastAPI, Request, File, UploadFile
+from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, FileResponse
 
 app = FastAPI()
 
-APP_PASSWORD  = os.environ.get("APP_PASSWORD", "")
-OBSIDIAN_PATH = os.environ.get("OBSIDIAN_PATH", "/home/node/obsidian")
-SESSIONS_FILE = Path(os.environ.get("SESSIONS_FILE", "/home/node/sessions.json"))
+APP_PASSWORD     = os.environ.get("APP_PASSWORD", "")
+OBSIDIAN_PATH    = os.environ.get("OBSIDIAN_PATH", "/home/node/obsidian")
+SESSIONS_FILE    = Path(os.environ.get("SESSIONS_FILE", "/home/node/sessions.json"))
+UPLOAD_DIR       = Path(os.environ.get("UPLOAD_DIR", "/home/node/workspace/.uploads"))
+MAX_UPLOAD_BYTES = 20 * 1024 * 1024  # 20 MB
 _TOKEN = hmac.new(b"claude-ui", APP_PASSWORD.encode(), hashlib.sha256).hexdigest() if APP_PASSWORD else ""
+
+
+def _safe_filename(name: str) -> str:
+    name = os.path.basename(name)
+    if "." in name:
+        stem, ext = name.rsplit(".", 1)
+        ext = "." + re.sub(r"[^\w]", "", ext)[:10]
+    else:
+        stem, ext = name, ""
+    stem = re.sub(r"[^\w\-]", "_", stem)
+    stem = re.sub(r"_+", "_", stem).strip("_") or "file"
+    return (stem[:116] + ext)[:120]
 
 
 # ── Sessions ──────────────────────────────────────────────────────
@@ -24,14 +39,29 @@ def _write_sessions(sessions: list):
     SESSIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
     SESSIONS_FILE.write_text(json.dumps(sessions, ensure_ascii=False, indent=2))
 
-def _upsert_session(session_id: str, user_msg: str, assistant_msg: str):
+def _build_prompt(prompt: str, attachments: list[dict]) -> str:
+    if not attachments:
+        return prompt
+    lines = [prompt, "", "---", "Attached files for this message:"]
+    for a in attachments:
+        label = "Image" if a.get("is_image") else "File"
+        lines.append(f"- {label}: {a['path']} (filename: {a['name']})")
+    lines.append("(You can use your file reading / view tools to access these files.)")
+    return "\n".join(lines)
+
+
+def _upsert_session(session_id: str, user_msg: str, assistant_msg: str,
+                    attachments: Optional[list] = None):
     sessions = _load_sessions()
     now = datetime.utcnow().isoformat()
+    user_record: dict = {"role": "user", "text": user_msg}
+    if attachments:
+        user_record["attachments"] = attachments
     for s in sessions:
         if s["session_id"] == session_id:
             s["updated_at"] = now
             s["messages"].extend([
-                {"role": "user",      "text": user_msg},
+                user_record,
                 {"role": "assistant", "text": assistant_msg},
             ])
             _write_sessions(sessions)
@@ -43,7 +73,7 @@ def _upsert_session(session_id: str, user_msg: str, assistant_msg: str):
         "created_at": now,
         "updated_at": now,
         "messages": [
-            {"role": "user",      "text": user_msg},
+            user_record,
             {"role": "assistant", "text": assistant_msg},
         ],
     })
@@ -180,6 +210,29 @@ HTML = r"""<!DOCTYPE html>
     #send:hover{background:#4338ca}
     #send:disabled{opacity:.4;cursor:not-allowed}
     #send svg{width:20px;height:20px;fill:none;stroke:#fff;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+
+    /* Attachments */
+    #attach-btn{background:#1a1a1a;border:1px solid #2a2a2a;color:#888;width:44px;height:44px;border-radius:12px;cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center;transition:background .15s,color .15s}
+    #attach-btn:hover{background:#222;color:#e5e5e5}
+    #attach-btn svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+    #attach-preview{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
+    #attach-preview:empty{display:none}
+    .attach-chip{display:flex;align-items:center;gap:4px;background:#1a1a1a;border:1px solid #2a2a2a;border-radius:8px;padding:3px 8px 3px 4px;font-size:12px;color:#aaa;max-width:180px}
+    .attach-chip img{width:36px;height:36px;object-fit:cover;border-radius:5px;flex-shrink:0}
+    .attach-chip .chip-icon{font-size:18px;flex-shrink:0;line-height:1}
+    .attach-chip .chip-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:110px}
+    .attach-chip .chip-rm{background:none;border:none;color:#555;cursor:pointer;padding:0 2px;font-size:14px;line-height:1;margin-left:2px;flex-shrink:0;transition:color .15s}
+    .attach-chip .chip-rm:hover{color:#f87171}
+    .attach-chip.uploading{opacity:.55}
+    .attach-chip.error{border-color:#7f1d1d;color:#f87171}
+
+    /* Attachment display in bubbles */
+    .bubble-attachments{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px}
+    .bubble-attachments img{max-width:200px;max-height:200px;border-radius:8px;display:block;object-fit:cover}
+    .bubble-file-chip{display:inline-flex;align-items:center;gap:4px;background:rgba(255,255,255,.07);border-radius:6px;padding:3px 8px;font-size:12px;color:#aaa}
+
+    /* Drag-over highlight */
+    body.drag-over #messages{outline:2px dashed #4f46e5;outline-offset:-4px}
   </style>
 </head>
 <body>
@@ -229,7 +282,12 @@ HTML = r"""<!DOCTYPE html>
     </div>
 
     <div id="footer">
+      <input type="file" id="file-input" multiple style="display:none">
+      <div id="attach-preview"></div>
       <form id="form">
+        <button type="button" id="attach-btn" title="Прикрепить файл (или перетащи / вставь)">
+          <svg viewBox="0 0 24 24"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+        </button>
         <textarea id="input" rows="1" placeholder="Напиши сообщение..."></textarea>
         <button id="send" type="submit">
           <svg viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
@@ -373,13 +431,7 @@ HTML = r"""<!DOCTYPE html>
 
         messages.innerHTML = '';
         for (const m of (s.messages || [])) {
-          const div = document.createElement('div');
-          div.className = `msg ${m.role}`;
-          const b = document.createElement('div');
-          b.className = 'bubble';
-          b.textContent = m.text;
-          div.appendChild(b);
-          messages.appendChild(div);
+          addMsg(m.role, m.text, m.attachments || []);
         }
         if (!s.messages?.length) {
           messages.innerHTML = '<div class="msg assistant"><div class="bubble">Привет! Чем могу помочь?</div></div>';
@@ -462,9 +514,29 @@ HTML = r"""<!DOCTYPE html>
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); form.dispatchEvent(new Event('submit')); }
     });
 
-    function addMsg(role, text = '') {
+    function addMsg(role, text = '', attachments = []) {
       const div = document.createElement('div');
       div.className = `msg ${role}`;
+      if (attachments.length) {
+        console.debug('[msg] rendering', attachments.length, 'attachments');
+        const row = document.createElement('div');
+        row.className = 'bubble-attachments';
+        attachments.forEach(a => {
+          if (a.is_image && (a.localUrl || a.id)) {
+            const img = document.createElement('img');
+            img.src = a.localUrl || `/claude/files/${a.id}`;
+            img.alt = a.name;
+            img.loading = 'lazy';
+            row.appendChild(img);
+          } else {
+            const chip = document.createElement('div');
+            chip.className = 'bubble-file-chip';
+            chip.textContent = '📄 ' + a.name;
+            row.appendChild(chip);
+          }
+        });
+        div.appendChild(row);
+      }
       const b = document.createElement('div');
       b.className = 'bubble';
       b.textContent = text;
@@ -474,12 +546,107 @@ HTML = r"""<!DOCTYPE html>
       return b;
     }
 
+    // ── Attachments ───────────────────────────────────────
+    let pendingAttachments = [];
+    const attachPreview = document.getElementById('attach-preview');
+    const fileInput     = document.getElementById('file-input');
+
+    function renderAttachChip(a) {
+      const chip = document.createElement('div');
+      chip.className = 'attach-chip uploading';
+      chip.dataset.id = a.clientId;
+      if (a.is_image && a.localUrl) {
+        const img = document.createElement('img');
+        img.src = a.localUrl;
+        chip.appendChild(img);
+      } else {
+        const ic = document.createElement('span');
+        ic.className = 'chip-icon';
+        ic.textContent = '📄';
+        chip.appendChild(ic);
+      }
+      const nm = document.createElement('span');
+      nm.className = 'chip-name';
+      nm.textContent = a.name;
+      chip.appendChild(nm);
+      const rm = document.createElement('button');
+      rm.className = 'chip-rm';
+      rm.type = 'button';
+      rm.textContent = '×';
+      rm.onclick = () => removeAttachment(a.clientId);
+      chip.appendChild(rm);
+      attachPreview.appendChild(chip);
+      return chip;
+    }
+
+    function removeAttachment(clientId) {
+      pendingAttachments = pendingAttachments.filter(a => a.clientId !== clientId);
+      const chip = attachPreview.querySelector(`[data-id="${clientId}"]`);
+      if (chip) chip.remove();
+      console.debug('[attach] removed', clientId, 'remaining', pendingAttachments.length);
+    }
+
+    function clearAttachments() {
+      pendingAttachments = [];
+      attachPreview.innerHTML = '';
+    }
+
+    async function handleFiles(fileList) {
+      const files = Array.from(fileList);
+      if (!files.length) return;
+      console.debug('[attach] uploading', files.length, 'files');
+      for (const file of files) {
+        const clientId = Math.random().toString(36).slice(2);
+        const isImage  = file.type.startsWith('image/');
+        const localUrl = isImage ? URL.createObjectURL(file) : null;
+        const pending  = { clientId, name: file.name, is_image: isImage, localUrl, path: null, id: null };
+        pendingAttachments.push(pending);
+        const chip = renderAttachChip(pending);
+        try {
+          const fd = new FormData();
+          fd.append('files', file);
+          const r = await fetch('/claude/upload', { method: 'POST', headers: { 'X-Token': token }, body: fd });
+          if (!r.ok) throw new Error(await r.text());
+          const d = await r.json();
+          const saved = d.files[0];
+          pending.path = saved.path;
+          pending.id   = saved.id;
+          chip.classList.remove('uploading');
+          console.debug('[attach] uploaded', saved.id);
+        } catch(err) {
+          chip.classList.remove('uploading');
+          chip.classList.add('error');
+          chip.title = 'Ошибка загрузки: ' + err.message;
+          pending.error = true;
+          console.debug('[attach] upload error', err.message);
+        }
+      }
+    }
+
+    document.getElementById('attach-btn').addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', e => { handleFiles(e.target.files); e.target.value = ''; });
+
+    document.addEventListener('dragover', e => { e.preventDefault(); document.body.classList.add('drag-over'); });
+    document.addEventListener('dragleave', e => { if (!e.relatedTarget) document.body.classList.remove('drag-over'); });
+    document.addEventListener('drop', e => {
+      e.preventDefault();
+      document.body.classList.remove('drag-over');
+      if (e.dataTransfer.files.length) handleFiles(e.dataTransfer.files);
+    });
+    document.addEventListener('paste', e => {
+      if (e.clipboardData.files.length) { e.preventDefault(); handleFiles(e.clipboardData.files); }
+    });
+
+    // ── Chat ───────────────────────────────────────────
     form.addEventListener('submit', async e => {
       e.preventDefault();
       const prompt = input.value.trim();
-      if (!prompt || send.disabled) return;
+      const readyAttachments = pendingAttachments.filter(a => a.path && !a.error);
+      if (!prompt && !readyAttachments.length || send.disabled) return;
 
-      addMsg('user', prompt);
+      const sentAttachments = [...readyAttachments];
+      addMsg('user', prompt, sentAttachments);
+      clearAttachments();
       input.value = '';
       input.style.height = 'auto';
       send.disabled = true;
@@ -493,7 +660,12 @@ HTML = r"""<!DOCTYPE html>
         const res = await fetch('/claude/ask', {
           method: 'POST',
           headers: {'Content-Type': 'application/json', 'X-Token': token},
-          body: JSON.stringify({prompt, model, session_id: sessionId}),
+          body: JSON.stringify({
+            prompt,
+            model,
+            session_id: sessionId,
+            attachments: sentAttachments.map(a => ({path: a.path, name: a.name, is_image: a.is_image})),
+          }),
         });
         if (res.status === 401) {
           bubble.textContent = '🔒 Сессия истекла, перезагрузи страницу';
@@ -603,23 +775,82 @@ async def delete_session(session_id: str, request: Request):
     return JSONResponse({"ok": True})
 
 
+@app.post("/claude/upload")
+async def upload_files(request: Request, files: list[UploadFile] = File(default=[])):
+    if not _authorized(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not files:
+        return JSONResponse({"error": "no files provided"}, status_code=400)
+
+    batch_id = uuid.uuid4().hex[:12]
+    batch_dir = UPLOAD_DIR / batch_id
+    batch_dir.mkdir(parents=True, exist_ok=True)
+    print(f"[DEBUG upload] batch={batch_id} files={len(files)}", flush=True)
+
+    saved = []
+    for f in files:
+        data = await f.read()
+        print(f"[DEBUG upload] received file={f.filename} size={len(data)} mime={f.content_type}", flush=True)
+        if len(data) > MAX_UPLOAD_BYTES:
+            return JSONResponse(
+                {"error": f"{f.filename}: exceeds 20 MB limit"},
+                status_code=413,
+            )
+        safe_name = _safe_filename(f.filename or "upload")
+        dest = batch_dir / safe_name
+        dest.write_bytes(data)
+        print(f"[DEBUG upload] saved to {dest}", flush=True)
+        is_image = (f.content_type or "").startswith("image/")
+        saved.append({
+            "id":        f"{batch_id}/{safe_name}",
+            "name":      f.filename or safe_name,
+            "path":      str(dest),
+            "mime_type": f.content_type or "application/octet-stream",
+            "is_image":  is_image,
+            "size":      len(data),
+        })
+
+    print(f"[INFO upload] batch={batch_id} saved {len(saved)} file(s)", flush=True)
+    return JSONResponse({"files": saved})
+
+
+@app.get("/claude/files/{file_path:path}")
+async def serve_file(file_path: str, request: Request):
+    if not _authorized(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    dest = UPLOAD_DIR / file_path
+    if not dest.exists() or not dest.is_file():
+        return JSONResponse({"error": "not found"}, status_code=404)
+    # Prevent path traversal
+    try:
+        dest.resolve().relative_to(UPLOAD_DIR.resolve())
+    except ValueError:
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    print(f"[DEBUG files] serving {dest}", flush=True)
+    return FileResponse(str(dest))
+
+
 @app.post("/claude/ask")
 async def ask(request: Request):
     if not _authorized(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
 
-    body       = await request.json()
-    prompt     = (body.get("prompt") or "").strip()
-    model      = (body.get("model") or "claude-sonnet-4-6").strip()
-    session_id = (body.get("session_id") or "").strip()
+    body        = await request.json()
+    prompt      = (body.get("prompt") or "").strip()
+    model       = (body.get("model") or "claude-sonnet-4-6").strip()
+    session_id  = (body.get("session_id") or "").strip()
+    attachments = body.get("attachments") or []
     if model not in {"claude-sonnet-4-6", "claude-opus-4-7", "claude-haiku-4-5-20251001"}:
         model = "claude-sonnet-4-6"
     if not prompt:
         return JSONResponse({"error": "empty prompt"})
 
+    augmented = _build_prompt(prompt, attachments)
+    print(f"[DEBUG ask] attachments={len(attachments)} augmented_len={len(augmented)}", flush=True)
+
     async def stream():
         env = {**os.environ, "HOME": "/home/node"}
-        cmd = ["claude", "-p", prompt, "--model", model,
+        cmd = ["claude", "-p", augmented, "--model", model,
                "--dangerously-skip-permissions", "--max-turns", "20",
                "--output-format", "stream-json"]
         if session_id:
@@ -717,8 +948,8 @@ async def ask(request: Request):
             assistant_text = "".join(parts)
 
         if final_sid:
-            _upsert_session(final_sid, prompt, assistant_text)
-            print(f"[INFO stream] session saved sid={final_sid} text_len={len(assistant_text)} is_error={is_error}", flush=True)
+            _upsert_session(final_sid, prompt, assistant_text, attachments=attachments)
+            print(f"[INFO stream] session saved sid={final_sid} text_len={len(assistant_text)} is_error={is_error} attachments={len(attachments)}", flush=True)
         asyncio.create_task(_git_push(env))
 
     return StreamingResponse(
