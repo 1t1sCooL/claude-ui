@@ -412,6 +412,10 @@ HTML = r"""<!DOCTYPE html>
     .session-info{flex:1;overflow:hidden}
     .session-title{font-size:12px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .session-date{font-size:10px;color:var(--text4);margin-top:2px}
+    .session-snippet{font-size:10px;color:var(--text3);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-style:italic}
+    .session-match-count{font-size:9px;background:var(--accent-glow);color:var(--accent);border-radius:8px;padding:0 5px;flex-shrink:0}
+    #search-status{padding:4px 12px;font-size:11px;color:var(--text4);text-align:center;display:none}
+    #search-status.visible{display:block}
     .session-del{background:none;border:none;color:var(--bg5);cursor:pointer;padding:2px 6px;border-radius:4px;font-size:13px;flex-shrink:0;line-height:1;transition:color .15s}
     .session-del:hover{color:var(--amber)}
     .session-export{background:none;border:none;color:var(--bg5);cursor:pointer;padding:2px 6px;border-radius:4px;font-size:13px;flex-shrink:0;line-height:1;transition:color .15s}
@@ -697,6 +701,7 @@ HTML = r"""<!DOCTYPE html>
       <input type="text" id="session-search" placeholder="Поиск сессий...">
       <button type="button" id="search-clear" title="Очистить">×</button>
     </div>
+    <div id="search-status"></div>
     <div id="session-list"></div>
     <div id="archive-section">
       <div id="archive-header">
@@ -944,27 +949,96 @@ HTML = r"""<!DOCTYPE html>
     const form     = document.getElementById('form');
     const sesList  = document.getElementById('session-list');
     let searchQuery = '';
+    let _searchTimer = null;
+    let _inFullTextSearch = false;
+    const searchStatus = document.getElementById('search-status');
 
     function filterSessions() {
       const q = searchQuery.toLowerCase().trim();
       document.getElementById('search-clear').classList.toggle('visible', q.length > 0);
+      if (_inFullTextSearch) return; // full-text results override client filter
       document.querySelectorAll('#session-list .session-item').forEach(item => {
         const title = (item.dataset.title || '').toLowerCase();
         item.style.display = (!q || title.includes(q)) ? '' : 'none';
       });
-      console.debug('[session] filter query=', q);
+    }
+
+    function renderSearchResults(results, q) {
+      sesList.innerHTML = '';
+      _inFullTextSearch = true;
+      if (!results.length) {
+        searchStatus.textContent = `Ничего не найдено по «${q}»`;
+        searchStatus.classList.add('visible');
+        return;
+      }
+      searchStatus.textContent = `${results.length} сессий содержат «${q}»`;
+      searchStatus.classList.add('visible');
+      results.forEach(r => {
+        const item = document.createElement('div');
+        item.className = 'session-item';
+        item.dataset.sid = r.session_id;
+        item.dataset.title = r.title;
+        const info = document.createElement('div');
+        info.className = 'session-info';
+        const title = document.createElement('div');
+        title.className = 'session-title';
+        title.textContent = r.title || 'Без названия';
+        info.appendChild(title);
+        if (r.snippet) {
+          const snip = document.createElement('div');
+          snip.className = 'session-snippet';
+          snip.textContent = r.snippet;
+          info.appendChild(snip);
+        }
+        const badge = document.createElement('span');
+        badge.className = 'session-match-count';
+        badge.textContent = r.match_count + ' совп.';
+        item.appendChild(info);
+        item.appendChild(badge);
+        item.addEventListener('click', () => openSession(r.session_id));
+        sesList.appendChild(item);
+      });
+      console.debug('[search] rendered', results.length, 'results for', q);
+    }
+
+    function clearSearchResults() {
+      _inFullTextSearch = false;
+      searchStatus.textContent = '';
+      searchStatus.classList.remove('visible');
+    }
+
+    async function runFullTextSearch(q) {
+      if (q.length < 2) {
+        clearSearchResults();
+        await loadSessions();
+        filterSessions();
+        return;
+      }
+      try {
+        const r = await fetch(`/claude/sessions/search?q=${encodeURIComponent(q)}`, { headers: {'X-Token': token} });
+        if (!r.ok) return;
+        const data = await r.json();
+        renderSearchResults(data.results || [], q);
+      } catch(e) { console.debug('[search] error', e.message); }
     }
 
     document.addEventListener('DOMContentLoaded', () => {
       const searchInput = document.getElementById('session-search');
       const searchClear = document.getElementById('search-clear');
       if (searchInput) {
-        searchInput.addEventListener('input', e => { searchQuery = e.target.value; filterSessions(); });
+        searchInput.addEventListener('input', e => {
+          searchQuery = e.target.value;
+          filterSessions();
+          clearTimeout(_searchTimer);
+          _searchTimer = setTimeout(() => runFullTextSearch(searchQuery.trim()), 350);
+        });
       }
       if (searchClear) {
-        searchClear.addEventListener('click', () => {
+        searchClear.addEventListener('click', async () => {
           searchQuery = '';
           if (searchInput) searchInput.value = '';
+          clearSearchResults();
+          await loadSessions();
           filterSessions();
         });
       }
@@ -2210,6 +2284,43 @@ async def list_sessions(request: Request, archived: bool = False):
     filtered = [s for s in sessions if bool(s.get("archived", False)) == archived]
     print(f"[DEBUG sessions] list archived={archived}: {len(filtered)} sessions", flush=True)
     return JSONResponse([{k: v for k, v in s.items() if k != "messages"} for s in filtered])
+
+
+@app.get("/claude/sessions/search")
+async def search_sessions(request: Request, q: str = ""):
+    if not _authorized(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    q = q.strip()
+    if not q:
+        return JSONResponse({"results": []})
+    ql = q.lower()
+    results = []
+    for s in _load_sessions():
+        if s.get("archived"):
+            continue
+        matches = 0
+        snippet = ""
+        for msg in s.get("messages", []):
+            text = msg.get("text") or ""
+            idx = text.lower().find(ql)
+            if idx != -1:
+                matches += 1
+                if not snippet:
+                    start = max(0, idx - 40)
+                    end = min(len(text), idx + len(q) + 60)
+                    raw = text[start:end].replace("\n", " ").strip()
+                    snippet = ("…" if start > 0 else "") + raw + ("…" if end < len(text) else "")
+        if matches:
+            results.append({
+                "session_id": s["session_id"],
+                "title": s.get("title", ""),
+                "updated_at": s.get("updated_at", ""),
+                "match_count": matches,
+                "snippet": snippet,
+            })
+    results.sort(key=lambda x: x["match_count"], reverse=True)
+    print(f"[DEBUG search] q={q!r} → {len(results)} sessions", flush=True)
+    return JSONResponse({"results": results[:50]})
 
 
 @app.get("/claude/sessions/{session_id}")
