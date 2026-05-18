@@ -154,6 +154,14 @@ HTML = r"""<!DOCTYPE html>
     #sidebar-toggle{width:32px;height:32px;flex-shrink:0;background:#1a1a1a;border:1px solid #2a2a2a;color:#aaa;border-radius:8px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:background .15s,color .15s}
     #sidebar-toggle:hover{background:#222;color:#fff}
     #sidebar-toggle svg{width:14px;height:14px;transition:transform .18s ease}
+    #sidebar-search{padding:6px 10px 2px;position:relative}
+    #sidebar.collapsed #sidebar-search{display:none}
+    #session-search{width:100%;background:#0f0f0f;border:1px solid #2a2a2a;color:#ccc;padding:7px 28px 7px 10px;border-radius:8px;font-size:12px;outline:none;transition:border-color .15s}
+    #session-search:focus{border-color:#4f46e5}
+    #session-search::placeholder{color:#444}
+    #search-clear{position:absolute;right:16px;top:50%;transform:translateY(-50%);background:none;border:none;color:#555;cursor:pointer;font-size:16px;line-height:1;display:none;transition:color .15s}
+    #search-clear:hover{color:#aaa}
+    #search-clear.visible{display:block}
     #session-list{flex:1;overflow-y:auto;padding:6px}
     .session-item{display:flex;align-items:center;gap:6px;padding:9px 10px;border-radius:9px;cursor:pointer;transition:background .15s;margin-bottom:2px}
     .session-item:hover{background:#1a1a1a}
@@ -161,8 +169,25 @@ HTML = r"""<!DOCTYPE html>
     .session-info{flex:1;overflow:hidden}
     .session-title{font-size:12px;color:#ccc;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .session-date{font-size:10px;color:#555;margin-top:2px}
-    .session-del{background:none;border:none;color:#3a3a3a;cursor:pointer;padding:2px 6px;border-radius:4px;font-size:16px;flex-shrink:0;line-height:1;transition:color .15s}
-    .session-del:hover{color:#f87171}
+    .session-del{background:none;border:none;color:#3a3a3a;cursor:pointer;padding:2px 6px;border-radius:4px;font-size:13px;flex-shrink:0;line-height:1;transition:color .15s}
+    .session-del:hover{color:#f5a623}
+    .session-export{background:none;border:none;color:#3a3a3a;cursor:pointer;padding:2px 6px;border-radius:4px;font-size:13px;flex-shrink:0;line-height:1;transition:color .15s}
+    .session-export:hover{color:#818cf8}
+
+    /* Archive section */
+    #archive-section{border-top:1px solid #1e1e1e;flex-shrink:0}
+    #archive-header{padding:8px 10px;display:flex;align-items:center;gap:4px;cursor:pointer;font-size:11px;color:#444;user-select:none;transition:color .15s}
+    #archive-header:hover{color:#666}
+    #archive-count{background:#2a2a2a;border-radius:10px;padding:0 5px;font-size:10px;color:#555;margin-left:4px}
+    #archive-arrow{font-size:9px;margin-left:auto;transition:transform .15s}
+    #archive-arrow.open{transform:rotate(90deg)}
+    #archive-list{display:none;overflow-y:auto;max-height:200px;padding:4px 6px}
+    #archive-list.open{display:block}
+    #sidebar.collapsed #archive-section{display:none}
+    .session-restore{background:none;border:none;color:#555;cursor:pointer;padding:2px 4px;font-size:12px;flex-shrink:0;transition:color .15s}
+    .session-restore:hover{color:#6ee7b7}
+    .session-perm-del{background:none;border:none;color:#3a3a3a;cursor:pointer;padding:2px 5px;border-radius:4px;font-size:14px;flex-shrink:0;line-height:1;transition:color .15s}
+    .session-perm-del:hover{color:#f87171}
 
     /* Sidebar collapsed state */
     #sidebar.collapsed{width:56px}
@@ -281,7 +306,19 @@ HTML = r"""<!DOCTYPE html>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
       </button>
     </div>
+    <div id="sidebar-search">
+      <input type="text" id="session-search" placeholder="Поиск сессий...">
+      <button type="button" id="search-clear" title="Очистить">×</button>
+    </div>
     <div id="session-list"></div>
+    <div id="archive-section">
+      <div id="archive-header">
+        <span>Архив</span>
+        <span id="archive-count"></span>
+        <span id="archive-arrow">▶</span>
+      </div>
+      <div id="archive-list"></div>
+    </div>
   </div>
 
   <div id="main">
@@ -431,6 +468,33 @@ HTML = r"""<!DOCTYPE html>
     const send     = document.getElementById('send');
     const form     = document.getElementById('form');
     const sesList  = document.getElementById('session-list');
+    let searchQuery = '';
+
+    function filterSessions() {
+      const q = searchQuery.toLowerCase().trim();
+      document.getElementById('search-clear').classList.toggle('visible', q.length > 0);
+      document.querySelectorAll('#session-list .session-item').forEach(item => {
+        const title = (item.dataset.title || '').toLowerCase();
+        item.style.display = (!q || title.includes(q)) ? '' : 'none';
+      });
+      console.debug('[session] filter query=', q);
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+      const searchInput = document.getElementById('session-search');
+      const searchClear = document.getElementById('search-clear');
+      if (searchInput) {
+        searchInput.addEventListener('input', e => { searchQuery = e.target.value; filterSessions(); });
+      }
+      if (searchClear) {
+        searchClear.addEventListener('click', () => {
+          searchQuery = '';
+          if (searchInput) searchInput.value = '';
+          filterSessions();
+        });
+      }
+    });
+
     const termBody = document.getElementById('term-body');
     const termLbl  = document.getElementById('term-label');
     const termArrow= document.getElementById('term-arrow');
@@ -495,12 +559,51 @@ HTML = r"""<!DOCTYPE html>
       } catch(e) {}
     }
 
+    function startRename(sid, titleEl) {
+      if (titleEl.querySelector('input')) return;
+      const current = titleEl.textContent;
+      titleEl.textContent = '';
+      const inp = document.createElement('input');
+      inp.value = current;
+      inp.style.cssText = 'width:100%;background:#0f0f0f;border:1px solid #4f46e5;color:#e5e5e5;border-radius:4px;padding:1px 5px;font-size:12px;outline:none';
+      titleEl.appendChild(inp);
+      inp.focus();
+      inp.select();
+
+      async function commit() {
+        const newTitle = inp.value.trim();
+        titleEl.textContent = newTitle || current;
+        if (newTitle && newTitle !== current) {
+          try {
+            await fetch(`/claude/sessions/${sid}`, {
+              method: 'PATCH',
+              headers: {'Content-Type': 'application/json', 'X-Token': token},
+              body: JSON.stringify({title: newTitle}),
+            });
+            titleEl.closest('.session-item').dataset.title = newTitle;
+            console.debug('[session] renamed', sid, '→', newTitle);
+          } catch(e) {
+            titleEl.textContent = current;
+            console.debug('[session] rename error', e.message);
+          }
+        }
+      }
+
+      inp.addEventListener('keydown', e => {
+        if (e.key === 'Enter') { e.preventDefault(); commit(); }
+        if (e.key === 'Escape') { titleEl.textContent = current; }
+      });
+      inp.addEventListener('blur', commit);
+      inp.addEventListener('click', e => e.stopPropagation());
+    }
+
     function renderSessions(list) {
       sesList.innerHTML = '';
       for (const s of list) {
         const item = document.createElement('div');
         item.className = 'session-item' + (s.session_id === sessionId ? ' active' : '');
-        item.dataset.sid = s.session_id;
+        item.dataset.sid   = s.session_id;
+        item.dataset.title = s.title || '';
         item.title = s.title || 'Без названия';
 
         const info = document.createElement('div');
@@ -508,6 +611,7 @@ HTML = r"""<!DOCTYPE html>
         const title = document.createElement('div');
         title.className = 'session-title';
         title.textContent = s.title || 'Без названия';
+        title.addEventListener('dblclick', e => { e.stopPropagation(); startRename(s.session_id, title); });
         const date = document.createElement('div');
         date.className = 'session-date';
         date.textContent = fmtDate(s.updated_at);
@@ -515,17 +619,27 @@ HTML = r"""<!DOCTYPE html>
 
         const del = document.createElement('button');
         del.className = 'session-del';
-        del.title = 'Удалить';
-        del.textContent = '×';
+        del.title = 'Архивировать';
+        del.textContent = '🗄';
         del.addEventListener('click', async e => {
           e.stopPropagation();
-          await deleteSession(s.session_id);
+          await archiveSession(s.session_id);
         });
 
-        item.append(info, del);
+        const exp = document.createElement('button');
+        exp.className = 'session-export';
+        exp.title = 'Скачать как Markdown';
+        exp.textContent = '↓';
+        exp.addEventListener('click', async e => {
+          e.stopPropagation();
+          await exportSession(s.session_id);
+        });
+
+        item.append(info, exp, del);
         item.addEventListener('click', () => openSession(s.session_id));
         sesList.appendChild(item);
       }
+      filterSessions();
     }
 
     function fmtDate(iso) {
@@ -561,7 +675,7 @@ HTML = r"""<!DOCTYPE html>
       } catch(e) {}
     }
 
-    async function deleteSession(sid) {
+    async function archiveSession(sid) {
       try {
         await fetch(`/claude/sessions/${sid}`, { method: 'DELETE', headers: {'X-Token': token} });
         if (sessionId === sid) {
@@ -570,8 +684,111 @@ HTML = r"""<!DOCTYPE html>
           messages.innerHTML = '<div class="msg assistant"><div class="bubble">Привет! Чем могу помочь?</div></div>';
           termClear();
         }
+        console.debug('[session] archived', sid);
         await loadSessions();
+        await loadArchivedSessions();
+      } catch(e) { console.debug('[session] archive error', e.message); }
+    }
+
+    async function loadArchivedSessions() {
+      try {
+        const r = await fetch('/claude/sessions?archived=true', {headers:{'X-Token':token}});
+        if (!r.ok) return;
+        const list = await r.json();
+        const countEl = document.getElementById('archive-count');
+        if (countEl) countEl.textContent = list.length || '';
+        renderArchivedSessions(list);
+        console.debug('[session] loaded', list.length, 'archived sessions');
       } catch(e) {}
+    }
+
+    function renderArchivedSessions(list) {
+      const archList = document.getElementById('archive-list');
+      if (!archList) return;
+      archList.innerHTML = '';
+      for (const s of list) {
+        const item = document.createElement('div');
+        item.className = 'session-item';
+        item.dataset.sid = s.session_id;
+
+        const info = document.createElement('div');
+        info.className = 'session-info';
+        const title = document.createElement('div');
+        title.className = 'session-title';
+        title.textContent = s.title || 'Без названия';
+        const date = document.createElement('div');
+        date.className = 'session-date';
+        date.textContent = fmtDate(s.updated_at);
+        info.append(title, date);
+
+        const restore = document.createElement('button');
+        restore.className = 'session-restore';
+        restore.title = 'Восстановить';
+        restore.textContent = '↺';
+        restore.addEventListener('click', async e => {
+          e.stopPropagation();
+          try {
+            await fetch(`/claude/sessions/${s.session_id}`, {
+              method: 'PATCH',
+              headers: {'Content-Type': 'application/json', 'X-Token': token},
+              body: JSON.stringify({archived: false}),
+            });
+            console.debug('[session] restored', s.session_id);
+            await loadSessions();
+            await loadArchivedSessions();
+          } catch(err) { console.debug('[session] restore error', err.message); }
+        });
+
+        const permDel = document.createElement('button');
+        permDel.className = 'session-perm-del';
+        permDel.title = 'Удалить навсегда';
+        permDel.textContent = '×';
+        permDel.addEventListener('click', async e => {
+          e.stopPropagation();
+          if (!confirm('Удалить сессию навсегда?')) return;
+          try {
+            await fetch(`/claude/sessions/${s.session_id}/permanent`, {method:'DELETE', headers:{'X-Token':token}});
+            console.debug('[session] permanently deleted', s.session_id);
+            await loadArchivedSessions();
+          } catch(err) { console.debug('[session] perm delete error', err.message); }
+        });
+
+        item.append(info, restore, permDel);
+        archList.appendChild(item);
+      }
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+      const archHeader = document.getElementById('archive-header');
+      if (archHeader) {
+        archHeader.addEventListener('click', () => {
+          const archList = document.getElementById('archive-list');
+          const archArrow = document.getElementById('archive-arrow');
+          const isOpen = archList.classList.toggle('open');
+          archArrow.classList.toggle('open', isOpen);
+          console.debug('[session] archive drawer toggled', isOpen);
+        });
+      }
+    });
+
+    async function exportSession(sid) {
+      try {
+        const r = await fetch(`/claude/sessions/${sid}/export`, {headers:{'X-Token': token}});
+        if (!r.ok) throw new Error(r.statusText);
+        const blob = await r.blob();
+        const cd = r.headers.get('Content-Disposition') || '';
+        const match = cd.match(/filename="([^"]+)"/);
+        const filename = match ? match[1] : `claude_${sid.slice(0,8)}.md`;
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = filename;
+        document.body.appendChild(a); a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        console.debug('[session] exported', sid, 'as', filename);
+      } catch(e) {
+        console.debug('[session] export error', e.message);
+      }
     }
 
     // ── Auth ───────────────────────────────────────────
@@ -599,6 +816,7 @@ HTML = r"""<!DOCTYPE html>
 
     async function afterAuth() {
       await loadSessions();
+      await loadArchivedSessions();
       if (sessionId) await openSession(sessionId);
       input.focus();
     }
@@ -880,11 +1098,13 @@ async def auth(request: Request):
 
 
 @app.get("/claude/sessions")
-async def list_sessions(request: Request):
+async def list_sessions(request: Request, archived: bool = False):
     if not _authorized(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     sessions = _load_sessions()
-    return JSONResponse([{k: v for k, v in s.items() if k != "messages"} for s in sessions])
+    filtered = [s for s in sessions if bool(s.get("archived", False)) == archived]
+    print(f"[DEBUG sessions] list archived={archived}: {len(filtered)} sessions", flush=True)
+    return JSONResponse([{k: v for k, v in s.items() if k != "messages"} for s in filtered])
 
 
 @app.get("/claude/sessions/{session_id}")
@@ -901,9 +1121,81 @@ async def get_session(session_id: str, request: Request):
 async def delete_session(session_id: str, request: Request):
     if not _authorized(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    sessions = [s for s in _load_sessions() if s["session_id"] != session_id]
-    _write_sessions(sessions)
+    sessions = _load_sessions()
+    now = datetime.utcnow().isoformat()
+    for s in sessions:
+        if s["session_id"] == session_id:
+            s["archived"] = True
+            s["updated_at"] = now
+            _write_sessions(sessions)
+            print(f"[INFO sessions] archived sid={session_id}", flush=True)
+            return JSONResponse({"ok": True, "archived": True})
+    return JSONResponse({"error": "not found"}, status_code=404)
+
+
+@app.delete("/claude/sessions/{session_id}/permanent")
+async def permanent_delete_session(session_id: str, request: Request):
+    if not _authorized(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    sessions = _load_sessions()
+    new_sessions = [s for s in sessions if s["session_id"] != session_id]
+    if len(new_sessions) == len(sessions):
+        return JSONResponse({"error": "not found"}, status_code=404)
+    _write_sessions(new_sessions)
+    print(f"[INFO sessions] permanently deleted sid={session_id}", flush=True)
     return JSONResponse({"ok": True})
+
+
+@app.patch("/claude/sessions/{session_id}")
+async def update_session(session_id: str, request: Request):
+    if not _authorized(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    body = await request.json()
+    sessions = _load_sessions()
+    now = datetime.utcnow().isoformat()
+    for s in sessions:
+        if s["session_id"] == session_id:
+            if "title" in body:
+                s["title"] = (str(body["title"]) or "")[:80]
+                s["updated_at"] = now
+                print(f"[INFO sessions] renamed sid={session_id} title={s['title'][:30]}", flush=True)
+            if "archived" in body:
+                s["archived"] = bool(body["archived"])
+                s["updated_at"] = now
+                print(f"[INFO sessions] set archived={s['archived']} sid={session_id}", flush=True)
+            _write_sessions(sessions)
+            return JSONResponse({k: v for k, v in s.items() if k != "messages"})
+    return JSONResponse({"error": "not found"}, status_code=404)
+
+
+@app.get("/claude/sessions/{session_id}/export")
+async def export_session(session_id: str, request: Request):
+    if not _authorized(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    from fastapi.responses import Response as FResponse
+    for s in _load_sessions():
+        if s["session_id"] == session_id:
+            lines = [f"# {s.get('title', 'Session')}", ""]
+            lines.append(f"_Exported: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}_")
+            lines.append("")
+            for m in s.get("messages", []):
+                lines.append("---")
+                lines.append("")
+                label = "**You:**" if m["role"] == "user" else "**Claude:**"
+                lines.append(f"{label} {m.get('text', '')}")
+                for a in m.get("attachments", []):
+                    lines.append(f"  - Attachment: {a.get('name', '')} (`{a.get('path', '')}`)")
+                lines.append("")
+            md = "\n".join(lines)
+            safe_title = re.sub(r"[^\w\s-]", "", s.get("title", "session"))[:40].strip().replace(" ", "_")
+            filename = f"claude_{safe_title or session_id[:8]}.md"
+            print(f"[DEBUG sessions] export sid={session_id} messages={len(s.get('messages', []))} file={filename}", flush=True)
+            return FResponse(
+                content=md,
+                media_type="text/markdown",
+                headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+            )
+    return JSONResponse({"error": "not found"}, status_code=404)
 
 
 @app.post("/claude/upload")
