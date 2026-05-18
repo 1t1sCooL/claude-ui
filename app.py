@@ -486,6 +486,13 @@ HTML = r"""<!DOCTYPE html>
     #term-body.open{display:block}
     .tl-tool{color:var(--purple)}
     .tl-result{color:var(--text4)}
+    .tool-cards{display:flex;flex-direction:column;gap:3px;margin-bottom:6px}
+    .tool-card{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text3);background:var(--bg4);border:1px solid var(--border2);border-radius:6px;padding:3px 9px;width:fit-content;max-width:100%;overflow:hidden}
+    .tool-card.pending .tc-icon{animation:spin .8s linear infinite;display:inline-block}
+    .tool-card.done .tc-icon{color:var(--green)}
+    .tool-card.done{opacity:.65}
+    .tc-name{font-family:monospace;color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:280px}
+    @keyframes spin{to{transform:rotate(360deg)}}
     .tl-other{color:var(--bg5)}
 
     /* ── Composer ────────────────────────────────────── */
@@ -2205,6 +2212,64 @@ HTML = r"""<!DOCTYPE html>
       }
     });
 
+    // ── Tool Use Progress Cards ────────────────────────
+    let _lastToolCard = null;
+
+    function getOrCreateToolCards(msgEl) {
+      let tc = msgEl.querySelector('.tool-cards');
+      if (!tc) {
+        tc = document.createElement('div');
+        tc.className = 'tool-cards';
+        const bubble = msgEl.querySelector('.bubble');
+        if (bubble) bubble.before(tc);
+        else msgEl.prepend(tc);
+      }
+      return tc;
+    }
+
+    function parseToolName(text) {
+      // "⚡ Bash(command=...)" → "Bash"
+      // "⚡ Read(path=...)" → "Read"
+      const m = text.match(/^⚡\s+([A-Za-z_]\w*)/);
+      return m ? m[1] : text.slice(2, 30).trim();
+    }
+
+    function addToolCard(msgEl, toolText) {
+      // Mark previous pending card as done
+      if (_lastToolCard && _lastToolCard.classList.contains('pending')) {
+        _lastToolCard.classList.remove('pending');
+        _lastToolCard.classList.add('done');
+        _lastToolCard.querySelector('.tc-icon').textContent = '✓';
+      }
+      const tc = getOrCreateToolCards(msgEl);
+      const card = document.createElement('div');
+      card.className = 'tool-card pending';
+      const icon = document.createElement('span');
+      icon.className = 'tc-icon';
+      icon.textContent = '⟳';
+      const name = document.createElement('span');
+      name.className = 'tc-name';
+      name.textContent = parseToolName(toolText);
+      card.appendChild(icon);
+      card.appendChild(name);
+      tc.appendChild(card);
+      _lastToolCard = card;
+      console.debug('[tool-card] added', name.textContent);
+    }
+
+    function finishToolCard() {
+      if (_lastToolCard && _lastToolCard.classList.contains('pending')) {
+        _lastToolCard.classList.remove('pending');
+        _lastToolCard.classList.add('done');
+        _lastToolCard.querySelector('.tc-icon').textContent = '✓';
+        _lastToolCard = null;
+      }
+    }
+
+    function clearToolCards() {
+      _lastToolCard = null;
+    }
+
     // ── Chat ───────────────────────────────────────────
     const stopBtn = document.getElementById('stop-btn');
     let activeStreamId = null;
@@ -2305,6 +2370,8 @@ HTML = r"""<!DOCTYPE html>
                   const cls = data.terminal.startsWith('⚡') ? 'tool'
                             : data.terminal.startsWith('←') ? 'result' : 'other';
                   termAppend(data.terminal, cls);
+                  if (cls === 'tool') addToolCard(bubble.parentElement, data.terminal);
+                  else if (cls === 'result') finishToolCard();
                 }
                 if (data.output_files && data.output_files.length) {
                   renderOutputFiles(bubble.parentElement, data.output_files);
@@ -2313,6 +2380,8 @@ HTML = r"""<!DOCTYPE html>
             }
           }
         } finally {
+          finishToolCard();
+          clearToolCards();
           bubble.classList.remove('streaming');
           if (rawText) {
             applyMarkdown(bubble, rawText);
