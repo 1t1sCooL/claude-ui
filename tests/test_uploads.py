@@ -21,23 +21,27 @@ class TestBuildPrompt(unittest.TestCase):
         result = app_module._build_prompt("hello world", [])
         self.assertEqual(result, "hello world")
 
-    def test_augmented_prompt_contains_paths(self):
-        attachments = [
-            {"path": "/uploads/abc/image.png", "name": "image.png", "is_image": True},
-            {"path": "/uploads/abc/code.py",   "name": "code.py",   "is_image": False},
-        ]
-        result = app_module._build_prompt("analyze this", attachments)
-        self.assertIn("Attached files for this message:", result)
-        self.assertIn("/uploads/abc/image.png", result)
-        self.assertIn("/uploads/abc/code.py", result)
-        self.assertIn("Image:", result)
-        self.assertIn("File:", result)
-        self.assertTrue(result.startswith("analyze this"))
+    def test_augmented_prompt_embeds_text_file(self):
+        """Text files should have their content embedded directly in the prompt."""
+        import tempfile, os
+        with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
+            f.write("print('hello')")
+            tmp = f.name
+        try:
+            attachments = [{"path": tmp, "name": "code.py", "is_image": False}]
+            result = app_module._build_prompt("analyze this", attachments)
+            self.assertIn("print('hello')", result)  # content embedded
+            self.assertIn("code.py", result)
+            self.assertTrue(result.startswith("analyze this"))
+        finally:
+            os.unlink(tmp)
 
-    def test_augmented_prompt_contains_tool_hint(self):
-        attachments = [{"path": "/uploads/x/file.txt", "name": "file.txt", "is_image": False}]
-        result = app_module._build_prompt("read it", attachments)
-        self.assertIn("file reading / view tools", result)
+    def test_augmented_prompt_image_placeholder(self):
+        """Images should have a placeholder note (actual data passed separately as base64)."""
+        attachments = [{"path": "/some/image.png", "name": "image.png", "is_image": True}]
+        result = app_module._build_prompt("describe", attachments)
+        self.assertIn("image.png", result)
+        self.assertIn("visual content", result)
 
 
 class TestSafeFilename(unittest.TestCase):
