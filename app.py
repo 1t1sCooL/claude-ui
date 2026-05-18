@@ -566,6 +566,25 @@ HTML = r"""<!DOCTYPE html>
     #workspace-toggle:hover,#workspace-toggle.active{background:var(--bg4);color:var(--text)}
     #workspace-toggle svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
 
+    /* ── Toast notifications ────────────────────────── */
+    #toast-container{position:fixed;bottom:80px;right:20px;z-index:200;display:flex;flex-direction:column;gap:8px;pointer-events:none}
+    @media(max-width:768px){#toast-container{bottom:70px;right:12px;left:12px}}
+    .toast{display:flex;align-items:center;gap:10px;padding:10px 14px;border-radius:10px;font-size:13px;font-weight:500;min-width:240px;max-width:380px;box-shadow:0 4px 20px var(--shadow);pointer-events:auto;animation:toastIn .25s ease both}
+    @keyframes toastIn{from{opacity:0;transform:translateY(10px) scale(.95)}to{opacity:1;transform:none}}
+    .toast.toast-out{animation:toastOut .2s ease forwards}
+    @keyframes toastOut{to{opacity:0;transform:translateY(8px) scale(.96)}}
+    .toast-error{background:#3b1515;border:1px solid #7f1d1d;color:#fca5a5}
+    .toast-success{background:#0f2e1a;border:1px solid #14532d;color:#86efac}
+    .toast-info{background:var(--bg3);border:1px solid var(--border2);color:var(--text2)}
+    .toast-warn{background:#2d1f00;border:1px solid #713f12;color:#fcd34d}
+    .toast-icon{font-size:15px;flex-shrink:0}
+    .toast-msg{flex:1}
+    .toast-close{background:none;border:none;cursor:pointer;font-size:16px;opacity:.6;line-height:1;padding:0 2px;color:inherit;transition:opacity .15s}
+    .toast-close:hover{opacity:1}
+    [data-theme="light"] .toast-error{background:#fef2f2;color:#991b1b}
+    [data-theme="light"] .toast-success{background:#f0fdf4;color:#166534}
+    [data-theme="light"] .toast-info{background:var(--bg3);color:var(--text2)}
+
     /* ── Skills browser modal ───────────────────────── */
     #skills-modal{position:fixed;inset:0;z-index:95;display:none;align-items:flex-end;justify-content:center;padding:0}
     #skills-modal.open{display:flex}
@@ -741,6 +760,24 @@ HTML = r"""<!DOCTYPE html>
   </div>
 
   <script>
+    // ── Toast notifications ────────────────────────────
+    const toastContainer = document.getElementById('toast-container');
+    const ICONS = {error:'❌', success:'✅', info:'ℹ️', warn:'⚠️'};
+    function showToast(msg, type = 'info', duration = 4000) {
+      const t = document.createElement('div');
+      t.className = `toast toast-${type}`;
+      t.innerHTML = `<span class="toast-icon">${ICONS[type]||'ℹ️'}</span><span class="toast-msg">${msg}</span><button class="toast-close" aria-label="Закрыть">×</button>`;
+      const close = () => {
+        t.classList.add('toast-out');
+        setTimeout(() => t.remove(), 220);
+      };
+      t.querySelector('.toast-close').addEventListener('click', close);
+      toastContainer.appendChild(t);
+      if (duration > 0) setTimeout(close, duration);
+      console.debug('[toast]', type, msg);
+      return close;
+    }
+
     // ── Markdown rendering ─────────────────────────────
     let _mdReady = false;
 
@@ -1428,8 +1465,14 @@ HTML = r"""<!DOCTYPE html>
       try {
         const r = await fetch('/claude/workspace/upload', { method:'POST', headers:{'X-Token':token}, body:fd });
         const data = await r.json();
-        if (r.ok) { console.debug('[ws] uploaded', data.files.length, 'file(s)'); loadWorkspaceTree(); }
-        else console.debug('[ws] upload error', data.error);
+        if (r.ok) {
+          showToast(`Загружено ${data.files.length} файл(а)`, 'success', 3000);
+          console.debug('[ws] uploaded', data.files.length, 'file(s)');
+          loadWorkspaceTree();
+        } else {
+          showToast('Ошибка загрузки: ' + (data.error || r.status), 'error');
+          console.debug('[ws] upload error', data.error);
+        }
       } catch(e) { console.debug('[ws] upload exception', e.message); }
     }
 
@@ -1803,6 +1846,7 @@ HTML = r"""<!DOCTYPE html>
           chip.classList.add('error');
           chip.title = 'Ошибка загрузки: ' + err.message;
           pending.error = true;
+          showToast('Ошибка загрузки файла: ' + err.message, 'error');
           console.debug('[attach] upload error', err.message);
         }
       }
@@ -1910,6 +1954,7 @@ HTML = r"""<!DOCTYPE html>
       } catch(err) {
         bubble.textContent = '❌ Ошибка: ' + err.message;
         bubble.classList.remove('streaming');
+        showToast('Ошибка запроса: ' + err.message, 'error');
       }
 
       send.disabled = false;
@@ -1917,11 +1962,26 @@ HTML = r"""<!DOCTYPE html>
       await loadSessions();
     });
   </script>
+  <div id="toast-container"></div>
 </body>
 </html>"""
 
 
 # ── Routes ────────────────────────────────────────────────────────
+
+@app.get("/claude/health")
+async def health():
+    sessions = _load_sessions()
+    active = sum(1 for s in sessions if not s.get("archived"))
+    archived = sum(1 for s in sessions if s.get("archived"))
+    return JSONResponse({
+        "status": "ok",
+        "sessions": {"active": active, "archived": archived, "total": len(sessions)},
+        "workspace_exists": WORKSPACE_DIR.exists(),
+        "commands_dir_exists": COMMANDS_DIR.exists(),
+        "skills_dirs": [str(d) for d in SKILLS_DIRS if d.exists()],
+    })
+
 
 @app.get("/claude")
 @app.get("/claude/")
