@@ -1357,13 +1357,22 @@ HTML = r"""<!DOCTYPE html>
         const exp = document.createElement('button');
         exp.className = 'session-export';
         exp.title = 'Скачать как Markdown';
-        exp.textContent = '↓';
+        exp.textContent = '↓md';
         exp.addEventListener('click', async e => {
           e.stopPropagation();
-          await exportSession(s.session_id);
+          await exportSession(s.session_id, 'md');
         });
 
-        item.append(info, exp, del);
+        const expJson = document.createElement('button');
+        expJson.className = 'session-export';
+        expJson.title = 'Скачать как JSON';
+        expJson.textContent = '↓{}';
+        expJson.addEventListener('click', async e => {
+          e.stopPropagation();
+          await exportSession(s.session_id, 'json');
+        });
+
+        item.append(info, exp, expJson, del);
         item.addEventListener('click', () => openSession(s.session_id));
         sesList.appendChild(item);
       }
@@ -1503,14 +1512,14 @@ HTML = r"""<!DOCTYPE html>
       }
     });
 
-    async function exportSession(sid) {
+    async function exportSession(sid, fmt = 'md') {
       try {
-        const r = await fetch(`/claude/sessions/${sid}/export`, {headers:{'X-Token': token}});
+        const r = await fetch(`/claude/sessions/${sid}/export?format=${fmt}`, {headers:{'X-Token': token}});
         if (!r.ok) throw new Error(r.statusText);
         const blob = await r.blob();
         const cd = r.headers.get('Content-Disposition') || '';
         const match = cd.match(/filename="([^"]+)"/);
-        const filename = match ? match[1] : `claude_${sid.slice(0,8)}.md`;
+        const filename = match ? match[1] : `claude_${sid.slice(0,8)}.${fmt}`;
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url; a.download = filename;
@@ -1520,6 +1529,7 @@ HTML = r"""<!DOCTYPE html>
         console.debug('[session] exported', sid, 'as', filename);
       } catch(e) {
         console.debug('[session] export error', e.message);
+        showToast('Ошибка экспорта: ' + e.message, 'error');
       }
     }
 
@@ -2648,12 +2658,24 @@ async def truncate_session(session_id: str, request: Request):
 
 
 @app.get("/claude/sessions/{session_id}/export")
-async def export_session(session_id: str, request: Request):
+async def export_session(session_id: str, request: Request, format: str = "md"):
     if not _authorized(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     from fastapi.responses import Response as FResponse
     for s in _load_sessions():
         if s["session_id"] == session_id:
+            safe_title = re.sub(r"[^\w\s-]", "", s.get("title", "session"))[:40].strip().replace(" ", "_")
+            base = f"claude_{safe_title or session_id[:8]}"
+            if format == "json":
+                payload = json.dumps(s, ensure_ascii=False, indent=2)
+                filename = base + ".json"
+                print(f"[DEBUG sessions] export JSON sid={session_id} file={filename}", flush=True)
+                return FResponse(
+                    content=payload,
+                    media_type="application/json",
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+                )
+            # default: markdown
             lines = [f"# {s.get('title', 'Session')}", ""]
             lines.append(f"_Exported: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}_")
             lines.append("")
@@ -2666,9 +2688,8 @@ async def export_session(session_id: str, request: Request):
                     lines.append(f"  - Attachment: {a.get('name', '')} (`{a.get('path', '')}`)")
                 lines.append("")
             md = "\n".join(lines)
-            safe_title = re.sub(r"[^\w\s-]", "", s.get("title", "session"))[:40].strip().replace(" ", "_")
-            filename = f"claude_{safe_title or session_id[:8]}.md"
-            print(f"[DEBUG sessions] export sid={session_id} messages={len(s.get('messages', []))} file={filename}", flush=True)
+            filename = base + ".md"
+            print(f"[DEBUG sessions] export MD sid={session_id} messages={len(s.get('messages', []))} file={filename}", flush=True)
             return FResponse(
                 content=md,
                 media_type="text/markdown",
