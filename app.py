@@ -464,6 +464,11 @@ HTML = r"""<!DOCTYPE html>
     .msg.user .bubble{background:var(--user-bg);color:var(--user-text);border-bottom-right-radius:5px;box-shadow:0 2px 8px var(--accent-glow)}
     .msg.assistant .bubble{background:var(--bg3);color:var(--text);border:1px solid var(--border2);border-bottom-left-radius:5px}
     .bubble.streaming::after{content:'▋';animation:blink .7s infinite;margin-left:2px;opacity:.7}
+    .msg-actions{display:flex;gap:4px;margin-top:4px;opacity:0;transition:opacity .15s;justify-content:flex-end}
+    .msg:hover .msg-actions{opacity:1}
+    .msg.assistant .msg-actions{justify-content:flex-start}
+    .msg-action-btn{background:none;border:1px solid var(--border2);color:var(--text3);border-radius:6px;padding:2px 8px;font-size:11px;cursor:pointer;transition:background .12s,color .12s,border-color .12s;font-family:inherit;white-space:nowrap}
+    .msg-action-btn:hover{background:var(--bg4);color:var(--text);border-color:var(--text4)}
 
     /* ── Terminal ────────────────────────────────────── */
     #term-panel{flex-shrink:0;border-top:1px solid var(--border);background:var(--term-bg)}
@@ -1162,8 +1167,9 @@ HTML = r"""<!DOCTYPE html>
           el.classList.toggle('active', el.dataset.sid === sid));
 
         messages.innerHTML = '';
-        for (const m of (s.messages || [])) {
-          addMsg(m.role, m.text, m.attachments || [], m.output_files || []);
+        for (let i = 0; i < (s.messages || []).length; i++) {
+          const m = s.messages[i];
+          addMsg(m.role, m.text, m.attachments || [], m.output_files || [], i);
         }
         if (!s.messages?.length) {
           messages.innerHTML = '<div class="msg assistant"><div class="bubble">Привет! Чем могу помочь?</div></div>';
@@ -1775,9 +1781,10 @@ HTML = r"""<!DOCTYPE html>
       else msgEl.appendChild(tray);
     }
 
-    function addMsg(role, text = '', attachments = [], outputFiles = []) {
+    function addMsg(role, text = '', attachments = [], outputFiles = [], msgIndex = -1) {
       const div = document.createElement('div');
       div.className = `msg ${role}`;
+      if (msgIndex >= 0) div.dataset.msgIndex = msgIndex;
       if (attachments.length) {
         console.debug('[msg] rendering', attachments.length, 'attachments');
         const row = document.createElement('div');
@@ -1802,7 +1809,6 @@ HTML = r"""<!DOCTYPE html>
       b.className = 'bubble';
       if (role === 'assistant' && text) {
         applyMarkdown(b, text);
-        console.debug('[md] addMsg rendered', text.length, 'chars');
       } else {
         b.textContent = text;
       }
@@ -1810,9 +1816,81 @@ HTML = r"""<!DOCTYPE html>
       if (role === 'assistant' && outputFiles.length) {
         renderOutputFiles(div, outputFiles);
       }
+      // Action buttons (shown on hover)
+      if (msgIndex >= 0 && sessionId) {
+        const actions = document.createElement('div');
+        actions.className = 'msg-actions';
+        if (role === 'user') {
+          const editBtn = document.createElement('button');
+          editBtn.className = 'msg-action-btn';
+          editBtn.textContent = '✏ Редактировать';
+          editBtn.addEventListener('click', () => editMessage(msgIndex, text));
+          actions.appendChild(editBtn);
+        } else if (role === 'assistant') {
+          const retryBtn = document.createElement('button');
+          retryBtn.className = 'msg-action-btn';
+          retryBtn.textContent = '↩ Повторить';
+          retryBtn.addEventListener('click', () => retryMessage(msgIndex));
+          actions.appendChild(retryBtn);
+        }
+        div.appendChild(actions);
+      }
       messages.appendChild(div);
       messages.scrollTop = messages.scrollHeight;
       return b;
+    }
+
+    async function truncateSession(keepCount) {
+      if (!sessionId) return false;
+      try {
+        const r = await fetch(`/claude/sessions/${sessionId}/truncate`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json', 'X-Token': token},
+          body: JSON.stringify({keep: keepCount}),
+        });
+        return r.ok;
+      } catch(e) { return false; }
+    }
+
+    async function editMessage(msgIndex, originalText) {
+      if (send.disabled) return;
+      // Keep messages before this user message, remove from msgIndex onwards
+      const ok = await truncateSession(msgIndex);
+      if (!ok) { showToast('Не удалось усечь сессию', 'error'); return; }
+      // Remove from DOM: all messages from this index onwards
+      document.querySelectorAll('.msg[data-msg-index]').forEach(el => {
+        if (parseInt(el.dataset.msgIndex) >= msgIndex) el.remove();
+      });
+      input.value = originalText;
+      input.style.height = 'auto';
+      input.style.height = Math.min(input.scrollHeight, 160) + 'px';
+      input.focus();
+      console.debug('[edit] truncated to', msgIndex, 'messages, text loaded');
+    }
+
+    async function retryMessage(assistantMsgIndex) {
+      if (send.disabled) return;
+      // assistantMsgIndex is the assistant msg — keep everything before it (msgIndex - 1 user msgs)
+      const keepCount = assistantMsgIndex; // keep 0..assistantMsgIndex-1
+      // Find the preceding user message text
+      let userText = '';
+      document.querySelectorAll('.msg[data-msg-index]').forEach(el => {
+        if (parseInt(el.dataset.msgIndex) === assistantMsgIndex - 1) {
+          userText = el.querySelector('.bubble')?.textContent || '';
+        }
+      });
+      const ok = await truncateSession(keepCount);
+      if (!ok) { showToast('Не удалось усечь сессию', 'error'); return; }
+      document.querySelectorAll('.msg[data-msg-index]').forEach(el => {
+        if (parseInt(el.dataset.msgIndex) >= keepCount) el.remove();
+      });
+      if (userText) {
+        input.value = userText;
+        input.style.height = 'auto';
+        input.style.height = Math.min(input.scrollHeight, 160) + 'px';
+        form.dispatchEvent(new Event('submit'));
+      }
+      console.debug('[retry] retrying from index', assistantMsgIndex);
     }
 
     // ── Attachments ───────────────────────────────────────
@@ -2168,6 +2246,25 @@ async def update_session(session_id: str, request: Request):
                 print(f"[INFO sessions] set archived={s['archived']} sid={session_id}", flush=True)
             _write_sessions(sessions)
             return JSONResponse({k: v for k, v in s.items() if k != "messages"})
+    return JSONResponse({"error": "not found"}, status_code=404)
+
+
+@app.post("/claude/sessions/{session_id}/truncate")
+async def truncate_session(session_id: str, request: Request):
+    """Keep only the first `keep` messages; remove the rest."""
+    if not _authorized(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    body = await request.json()
+    keep = int(body.get("keep", 0))
+    sessions = _load_sessions()
+    for s in sessions:
+        if s["session_id"] == session_id:
+            original = len(s.get("messages", []))
+            s["messages"] = s.get("messages", [])[:keep]
+            s["updated_at"] = __import__("datetime").datetime.utcnow().isoformat()
+            _write_sessions(sessions)
+            print(f"[INFO sessions] truncated sid={session_id} kept={keep} removed={original - keep}", flush=True)
+            return JSONResponse({"kept": keep, "removed": original - keep})
     return JSONResponse({"error": "not found"}, status_code=404)
 
 
