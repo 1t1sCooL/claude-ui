@@ -474,6 +474,32 @@ HTML = r"""<!DOCTYPE html>
     .mermaid-block{background:var(--bg4);border-radius:10px;padding:12px;margin:10px 0;overflow-x:auto;text-align:center;border:1px solid var(--border2)}
     .mermaid-block svg{max-width:100%;height:auto}
 
+    /* ── Workspace panel ──────────────────────────── */
+    #workspace-panel{width:280px;flex-shrink:0;background:var(--bg2);border-left:1px solid var(--border);display:none;flex-direction:column;overflow:hidden}
+    #workspace-panel.open{display:flex}
+    #ws-header{padding:10px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:6px;flex-shrink:0}
+    #ws-header span{font-size:13px;font-weight:600;color:var(--text);flex:1}
+    #ws-refresh,#ws-close{background:none;border:none;color:var(--text3);cursor:pointer;font-size:16px;padding:2px 6px;border-radius:5px;line-height:1;transition:color .15s,background .15s}
+    #ws-refresh:hover,#ws-close:hover{color:var(--text);background:var(--bg4)}
+    #ws-upload-zone{margin:8px 10px;border:1.5px dashed var(--border2);border-radius:10px;padding:10px;font-size:12px;color:var(--text3);text-align:center;cursor:pointer;transition:border-color .15s,background .15s;flex-shrink:0}
+    #ws-upload-zone:hover,#ws-upload-zone.drag-over{border-color:var(--accent);background:var(--accent-glow);color:var(--text2)}
+    #ws-upload-zone label{color:var(--accent);cursor:pointer;text-decoration:underline}
+    #ws-file-input{display:none}
+    #ws-tree{flex:1;overflow-y:auto;padding:4px 6px 8px}
+    .ws-node{font-size:12px;line-height:1.5}
+    .ws-row{display:flex;align-items:center;gap:5px;padding:3px 6px;border-radius:6px;cursor:pointer;transition:background .1s;color:var(--text2);white-space:nowrap;overflow:hidden}
+    .ws-row:hover{background:var(--bg3);color:var(--text)}
+    .ws-icon{font-size:13px;flex-shrink:0;width:16px;text-align:center}
+    .ws-name{flex:1;overflow:hidden;text-overflow:ellipsis}
+    .ws-size{font-size:10px;color:var(--text4);flex-shrink:0}
+    .ws-children{display:none;padding-left:14px}
+    .ws-children.open{display:block}
+    .ws-dir-row .ws-arrow{font-size:9px;color:var(--text4);flex-shrink:0;transition:transform .15s}
+    .ws-dir-row.open .ws-arrow{transform:rotate(90deg)}
+    #workspace-toggle{width:32px;height:32px;flex-shrink:0;background:var(--bg3);border:1px solid var(--border2);color:var(--text3);border-radius:8px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:background .15s,color .15s;margin-left:4px}
+    #workspace-toggle:hover,#workspace-toggle.active{background:var(--bg4);color:var(--text)}
+    #workspace-toggle svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+
     /* ── Mobile drawer ─────────────────────────────── */
     #mobile-menu-btn{display:none;width:36px;height:36px;flex-shrink:0;background:var(--bg3);border:1px solid var(--border2);color:var(--text3);border-radius:8px;cursor:pointer;align-items:center;justify-content:center;transition:background .15s,color .15s;order:-1}
     #mobile-menu-btn:hover{background:var(--bg4);color:var(--text)}
@@ -503,6 +529,9 @@ HTML = r"""<!DOCTYPE html>
       #slash-picker{left:10px;right:10px}
       /* Bubbles */
       .bubble{font-size:14px;padding:10px 14px}
+      /* Workspace panel overlay on mobile */
+      #workspace-panel{position:fixed;top:0;right:-280px;bottom:0;z-index:90;width:280px;transition:right .25s cubic-bezier(.4,0,.2,1);box-shadow:-4px 0 30px var(--shadow)}
+      #workspace-panel.open{right:0;display:flex}
     }
   </style>
 </head>
@@ -559,6 +588,9 @@ HTML = r"""<!DOCTYPE html>
         <svg id="theme-icon-moon" viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
         <svg id="theme-icon-sun" viewBox="0 0 24 24" style="display:none"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
       </button>
+      <button id="workspace-toggle" title="Файлы workspace" aria-label="Файлы workspace">
+        <svg viewBox="0 0 24 24"><path d="M3 3h18v18H3z" stroke-width="1.5"/><path d="M3 9h18M9 21V9"/></svg>
+      </button>
     </div>
 
     <div id="messages">
@@ -587,6 +619,19 @@ HTML = r"""<!DOCTYPE html>
         </button>
       </form>
     </div>
+  </div>
+
+  <div id="workspace-panel">
+    <div id="ws-header">
+      <span>📁 Workspace</span>
+      <button id="ws-refresh" title="Обновить">↻</button>
+      <button id="ws-close" title="Закрыть">×</button>
+    </div>
+    <div id="ws-upload-zone">
+      Перетащи файлы или <label for="ws-file-input">выбери</label>
+      <input type="file" id="ws-file-input" multiple>
+    </div>
+    <div id="ws-tree"></div>
   </div>
 
   <script>
@@ -1097,6 +1142,135 @@ HTML = r"""<!DOCTYPE html>
         }
       } catch(e) { authErr.textContent = 'Ошибка соединения'; }
     }
+
+    // ── Workspace File Browser ─────────────────────────
+    const wsPanel   = document.getElementById('workspace-panel');
+    const wsTree    = document.getElementById('ws-tree');
+    const wsUpload  = document.getElementById('ws-upload-zone');
+    const wsInput   = document.getElementById('ws-file-input');
+    const wsTogBtn  = document.getElementById('workspace-toggle');
+    let wsLoaded = false;
+
+    function fileIcon(ext, isImage) {
+      if (isImage) return '🖼';
+      const m = {'.pdf':'📄','.md':'📝','.txt':'📄','.js':'📜','.ts':'📜','.py':'🐍','.json':'{}',
+                 '.html':'🌐','.css':'🎨','.sh':'⚙','.zip':'🗜','.tar':'🗜','.gz':'🗜'};
+      return m[ext] || '📄';
+    }
+
+    function renderTree(items, container, depth) {
+      items.forEach(node => {
+        const wrap = document.createElement('div');
+        wrap.className = 'ws-node';
+        const row = document.createElement('div');
+        row.className = 'ws-row' + (node.type === 'dir' ? ' ws-dir-row' : '');
+        row.style.paddingLeft = (depth * 10) + 'px';
+
+        if (node.type === 'dir') {
+          const arrow = document.createElement('span');
+          arrow.className = 'ws-arrow';
+          arrow.textContent = '▶';
+          const icon = document.createElement('span');
+          icon.className = 'ws-icon';
+          icon.textContent = '📁';
+          const name = document.createElement('span');
+          name.className = 'ws-name';
+          name.textContent = node.name;
+          row.appendChild(arrow);
+          row.appendChild(icon);
+          row.appendChild(name);
+
+          const children = document.createElement('div');
+          children.className = 'ws-children';
+          if (node.children && node.children.length) renderTree(node.children, children, depth + 1);
+
+          row.addEventListener('click', () => {
+            const open = children.classList.toggle('open');
+            row.classList.toggle('open', open);
+            console.debug('[ws] dir', open ? 'expanded' : 'collapsed', node.rel_path);
+          });
+          wrap.appendChild(row);
+          wrap.appendChild(children);
+        } else {
+          const icon = document.createElement('span');
+          icon.className = 'ws-icon';
+          icon.textContent = fileIcon(node.ext, node.is_image);
+          const name = document.createElement('span');
+          name.className = 'ws-name';
+          name.title = node.rel_path;
+          name.textContent = node.name;
+          const sz = document.createElement('span');
+          sz.className = 'ws-size';
+          sz.textContent = formatBytes(node.size || 0);
+          row.appendChild(icon);
+          row.appendChild(name);
+          row.appendChild(sz);
+          row.addEventListener('click', () => {
+            const url = `/claude/workspace/file/${node.rel_path}`;
+            if (node.is_image) { window.open(url, '_blank'); }
+            else {
+              const a = document.createElement('a');
+              a.href = url; a.download = node.name; a.click();
+            }
+            console.debug('[ws] file accessed', node.rel_path);
+          });
+          wrap.appendChild(row);
+        }
+        container.appendChild(wrap);
+      });
+    }
+
+    async function loadWorkspaceTree() {
+      wsTree.innerHTML = '<div style="padding:12px;font-size:12px;color:var(--text3)">Загрузка...</div>';
+      try {
+        const r = await fetch('/claude/workspace/tree', { headers: {'X-Token': token} });
+        if (!r.ok) { wsTree.innerHTML = '<div style="padding:12px;font-size:12px;color:var(--red)">Ошибка загрузки</div>'; return; }
+        const data = await r.json();
+        wsTree.innerHTML = '';
+        if (!data.tree || !data.tree.length) {
+          wsTree.innerHTML = '<div style="padding:12px;font-size:12px;color:var(--text3)">Workspace пуст</div>';
+          return;
+        }
+        renderTree(data.tree, wsTree, 0);
+        wsLoaded = true;
+        console.debug('[ws] tree loaded', data.tree.length, 'root items');
+      } catch(e) { wsTree.innerHTML = '<div style="padding:12px;font-size:12px;color:var(--red)">Ошибка: ' + e.message + '</div>'; }
+    }
+
+    async function wsUploadFiles(files, dir) {
+      const fd = new FormData();
+      for (const f of files) fd.append('files', f);
+      if (dir) fd.append('dir', dir);
+      try {
+        const r = await fetch('/claude/workspace/upload', { method:'POST', headers:{'X-Token':token}, body:fd });
+        const data = await r.json();
+        if (r.ok) { console.debug('[ws] uploaded', data.files.length, 'file(s)'); loadWorkspaceTree(); }
+        else console.debug('[ws] upload error', data.error);
+      } catch(e) { console.debug('[ws] upload exception', e.message); }
+    }
+
+    wsTogBtn.addEventListener('click', () => {
+      const open = wsPanel.classList.toggle('open');
+      wsTogBtn.classList.toggle('active', open);
+      if (open && !wsLoaded) loadWorkspaceTree();
+      console.debug('[ws] panel', open ? 'opened' : 'closed');
+    });
+
+    document.getElementById('ws-close').addEventListener('click', () => {
+      wsPanel.classList.remove('open');
+      wsTogBtn.classList.remove('active');
+    });
+
+    document.getElementById('ws-refresh').addEventListener('click', loadWorkspaceTree);
+
+    wsInput.addEventListener('change', () => { if (wsInput.files.length) wsUploadFiles(wsInput.files, ''); wsInput.value = ''; });
+    wsUpload.addEventListener('click', () => wsInput.click());
+    wsUpload.addEventListener('dragover', e => { e.preventDefault(); wsUpload.classList.add('drag-over'); });
+    wsUpload.addEventListener('dragleave', () => wsUpload.classList.remove('drag-over'));
+    wsUpload.addEventListener('drop', e => {
+      e.preventDefault(); wsUpload.classList.remove('drag-over');
+      if (e.dataTransfer.files.length) wsUploadFiles(e.dataTransfer.files, '');
+    });
 
     async function afterAuth() {
       await loadSessions();
@@ -1780,6 +1954,87 @@ async def delete_workspace_file(file_path: str, request: Request):
     dest.unlink()
     print(f"[DEBUG workspace] deleted {dest} ({size}b)", flush=True)
     return JSONResponse({"deleted": file_path})
+
+
+def _workspace_tree(base: Path, rel: str = "", depth: int = 0, max_depth: int = 6) -> dict:
+    """Recursively build workspace directory tree."""
+    name = base.name
+    node: dict = {"name": name, "rel_path": rel, "type": "dir", "children": []}
+    if depth >= max_depth:
+        return node
+    try:
+        entries = sorted(base.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
+        for p in entries:
+            if p.name.startswith("."):
+                continue
+            child_rel = (rel + "/" + p.name).lstrip("/")
+            if p.is_dir():
+                node["children"].append(_workspace_tree(p, child_rel, depth + 1, max_depth))
+            else:
+                ext = p.suffix.lower()
+                try:
+                    size = p.stat().st_size
+                except Exception:
+                    size = 0
+                node["children"].append({
+                    "name": p.name,
+                    "rel_path": child_rel,
+                    "type": "file",
+                    "ext": ext,
+                    "is_image": ext in _IMAGE_EXTS,
+                    "size": size,
+                })
+    except PermissionError:
+        pass
+    files = sum(1 for c in node["children"] if c["type"] == "file")
+    dirs  = sum(1 for c in node["children"] if c["type"] == "dir")
+    print(f"[DEBUG tree] {rel or '/'}: {dirs} dirs, {files} files", flush=True)
+    return node
+
+
+@app.get("/claude/workspace/tree")
+async def workspace_tree(request: Request):
+    if not _authorized(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not WORKSPACE_DIR.exists():
+        return JSONResponse({"tree": []})
+    root = _workspace_tree(WORKSPACE_DIR)
+    print(f"[DEBUG tree] root children={len(root['children'])}", flush=True)
+    return JSONResponse({"tree": root["children"]})
+
+
+@app.post("/claude/workspace/upload")
+async def workspace_upload(request: Request,
+                           files: list[UploadFile] = File(default=[]),
+                           dir: str = ""):
+    if not _authorized(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not files:
+        return JSONResponse({"error": "no files"}, status_code=400)
+    # Sanitize target directory
+    safe_dir = Path(dir.lstrip("/")).resolve() if dir else Path(".")
+    target = (WORKSPACE_DIR / safe_dir).resolve()
+    try:
+        target.relative_to(WORKSPACE_DIR.resolve())
+    except ValueError:
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    target.mkdir(parents=True, exist_ok=True)
+    saved = []
+    for f in files:
+        if not f.filename:
+            continue
+        data = await f.read()
+        if len(data) > MAX_UPLOAD_BYTES:
+            return JSONResponse({"error": f"{f.filename} too large"}, status_code=413)
+        fname = _safe_filename(f.filename)
+        dest = target / fname
+        dest.write_bytes(data)
+        rel = str(dest.relative_to(WORKSPACE_DIR))
+        ext = dest.suffix.lower()
+        saved.append({"name": fname, "rel_path": rel, "is_image": ext in _IMAGE_EXTS, "size": len(data)})
+        print(f"[DEBUG ws-upload] saved {rel} ({len(data)}b)", flush=True)
+    print(f"[INFO ws-upload] uploaded {len(saved)} file(s) to {target}", flush=True)
+    return JSONResponse({"files": saved})
 
 
 async def _anthropic_stream(prompt: str, augmented: str, image_attachments: list,
