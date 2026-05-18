@@ -473,6 +473,37 @@ HTML = r"""<!DOCTYPE html>
     .copy-btn.copied{color:var(--green);border-color:var(--green)}
     .mermaid-block{background:var(--bg4);border-radius:10px;padding:12px;margin:10px 0;overflow-x:auto;text-align:center;border:1px solid var(--border2)}
     .mermaid-block svg{max-width:100%;height:auto}
+
+    /* ── Mobile drawer ─────────────────────────────── */
+    #mobile-menu-btn{display:none;width:36px;height:36px;flex-shrink:0;background:var(--bg3);border:1px solid var(--border2);color:var(--text3);border-radius:8px;cursor:pointer;align-items:center;justify-content:center;transition:background .15s,color .15s;order:-1}
+    #mobile-menu-btn:hover{background:var(--bg4);color:var(--text)}
+    #mobile-menu-btn svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round}
+    #sidebar-backdrop{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:89;backdrop-filter:blur(2px)}
+    #sidebar-backdrop.open{display:block}
+
+    @media(max-width:768px){
+      /* Sidebar → overlay drawer */
+      #sidebar{position:fixed;top:0;left:0;bottom:0;z-index:90;transform:translateX(-100%);transition:transform .25s cubic-bezier(.4,0,.2,1);box-shadow:4px 0 30px var(--shadow)}
+      #sidebar.mobile-open{transform:translateX(0)}
+      #sidebar.collapsed{width:260px;transform:translateX(-100%)}
+      #sidebar.collapsed.mobile-open{transform:translateX(0)}
+      /* Show hamburger, hide desktop toggle */
+      #mobile-menu-btn{display:flex}
+      #sidebar-toggle{display:none}
+      /* Header */
+      #header{padding:8px 12px;gap:8px}
+      #header-title{font-size:14px}
+      #model{font-size:12px;padding:5px 8px;max-width:110px}
+      /* Messages */
+      #messages{padding:16px 12px;gap:10px}
+      .msg{max-width:92%}
+      /* Composer */
+      #footer{padding:10px 12px calc(12px + env(safe-area-inset-bottom,0px))}
+      #input{font-size:16px}
+      #slash-picker{left:10px;right:10px}
+      /* Bubbles */
+      .bubble{font-size:14px;padding:10px 14px}
+    }
   </style>
 </head>
 <body>
@@ -511,7 +542,12 @@ HTML = r"""<!DOCTYPE html>
   </div>
 
   <div id="main">
+    <div id="sidebar-backdrop"></div>
+
     <div id="header">
+      <button id="mobile-menu-btn" aria-label="Открыть меню">
+        <svg viewBox="0 0 24 24"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+      </button>
       <div class="dot"></div>
       <span id="header-title">Claude</span>
       <select id="model">
@@ -720,24 +756,48 @@ HTML = r"""<!DOCTYPE html>
     const termArrow= document.getElementById('term-arrow');
     const sidebar  = document.getElementById('sidebar');
     const sidebarToggle = document.getElementById('sidebar-toggle');
+    const backdrop = document.getElementById('sidebar-backdrop');
+    const isMobile = () => window.innerWidth <= 768;
 
-    // ── Sidebar collapse ───────────────────────────────
+    // ── Sidebar collapse (desktop) / drawer (mobile) ───
     function applySidebarState(collapsed) {
       sidebar.classList.toggle('collapsed', collapsed);
-      sidebarToggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
-      sidebarToggle.setAttribute('aria-label', collapsed ? 'Развернуть боковую панель' : 'Свернуть боковую панель');
-      sidebarToggle.title = collapsed ? 'Развернуть (Ctrl/Cmd+B)' : 'Свернуть (Ctrl/Cmd+B)';
+      if (sidebarToggle) {
+        sidebarToggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+        sidebarToggle.title = collapsed ? 'Развернуть (Ctrl/Cmd+B)' : 'Свернуть (Ctrl/Cmd+B)';
+      }
+    }
+
+    function openMobileDrawer() {
+      sidebar.classList.add('mobile-open');
+      backdrop.classList.add('open');
+      document.body.style.overflow = 'hidden';
+      console.debug('[sidebar] mobile drawer open');
+    }
+
+    function closeMobileDrawer() {
+      sidebar.classList.remove('mobile-open');
+      backdrop.classList.remove('open');
+      document.body.style.overflow = '';
+      console.debug('[sidebar] mobile drawer closed');
     }
 
     function toggleSidebar() {
+      if (isMobile()) {
+        sidebar.classList.contains('mobile-open') ? closeMobileDrawer() : openMobileDrawer();
+        return;
+      }
       const collapsed = !sidebar.classList.contains('collapsed');
       applySidebarState(collapsed);
       localStorage.setItem(SIDEBAR_KEY, collapsed ? '1' : '0');
       console.debug('[sidebar] toggled', collapsed);
     }
 
+    backdrop.addEventListener('click', closeMobileDrawer);
     applySidebarState(localStorage.getItem(SIDEBAR_KEY) === '1');
-    sidebarToggle.addEventListener('click', toggleSidebar);
+    if (sidebarToggle) sidebarToggle.addEventListener('click', toggleSidebar);
+    document.getElementById('mobile-menu-btn').addEventListener('click', toggleSidebar);
+
     window.addEventListener('keydown', e => {
       if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'b') {
         if (!authEl.classList.contains('hidden')) return;
@@ -745,6 +805,9 @@ HTML = r"""<!DOCTYPE html>
         toggleSidebar();
       }
     });
+
+    // Close mobile drawer when screen resizes to desktop
+    window.addEventListener('resize', () => { if (!isMobile()) closeMobileDrawer(); });
 
     // ── Terminal panel ─────────────────────────────────
     document.getElementById('term-header').addEventListener('click', () => {
@@ -873,6 +936,7 @@ HTML = r"""<!DOCTYPE html>
     }
 
     async function openSession(sid) {
+      if (isMobile()) closeMobileDrawer();
       try {
         const r = await fetch(`/claude/sessions/${sid}`, { headers: {'X-Token': token} });
         if (!r.ok) return;
