@@ -852,7 +852,7 @@ async def ask(request: Request):
         env = {**os.environ, "HOME": "/home/node"}
         cmd = ["claude", "-p", augmented, "--model", model,
                "--dangerously-skip-permissions", "--max-turns", "20",
-               "--output-format", "stream-json"]
+               "--output-format", "stream-json", "--verbose"]
         if session_id:
             cmd += ["--resume", session_id]
 
