@@ -1,4 +1,4 @@
-import asyncio, json, os, hmac, hashlib, re, uuid
+import asyncio, json, os, hmac, hashlib, re, uuid, base64
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -976,23 +976,61 @@ async def ask(request: Request):
     if not prompt:
         return JSONResponse({"error": "empty prompt"})
 
-    augmented = _build_prompt(prompt, attachments)
-    print(f"[DEBUG ask] attachments={len(attachments)} augmented_len={len(augmented)}", flush=True)
+    # Separate image attachments to pass as multimodal base64 via stdin
+    image_attachments = [a for a in attachments if a.get("is_image")]
+    text_attachments  = [a for a in attachments if not a.get("is_image")]
+
+    # For text-only: augment prompt with all file paths
+    # For multimodal: augment prompt with text file paths only (images go as base64)
+    augmented = _build_prompt(prompt, attachments if not image_attachments else text_attachments)
+    print(f"[DEBUG ask] attachments={len(attachments)} images={len(image_attachments)} augmented_len={len(augmented)}", flush=True)
+
+    # Build multimodal stdin payload when images are present
+    stdin_data: Optional[bytes] = None
+    if image_attachments:
+        content: list = [{"type": "text", "text": augmented}]
+        for a in image_attachments:
+            fpath = Path(a.get("path", ""))
+            if fpath.exists() and fpath.is_file():
+                try:
+                    b64 = base64.standard_b64encode(fpath.read_bytes()).decode()
+                    mime = a.get("mime_type", "image/jpeg")
+                    content.append({"type": "image", "source": {
+                        "type": "base64", "media_type": mime, "data": b64,
+                    }})
+                    print(f"[DEBUG ask] encoded image {fpath.name} ({len(b64)} b64 chars)", flush=True)
+                except Exception as e:
+                    print(f"[WARN ask] failed to encode image {fpath}: {e}", flush=True)
+        stdin_data = json.dumps([{"role": "user", "content": content}]).encode()
 
     async def stream():
         env = {**os.environ, "HOME": "/home/node"}
-        cmd = ["claude", "-p", augmented, "--model", model,
-               "--dangerously-skip-permissions", "--max-turns", "20",
-               "--output-format", "stream-json", "--verbose"]
+        if stdin_data:
+            # Multimodal path: pass message via stdin with --input-format json
+            cmd = ["claude", "--model", model,
+                   "--dangerously-skip-permissions", "--max-turns", "20",
+                   "--output-format", "stream-json", "--verbose",
+                   "--input-format", "json"]
+        else:
+            # Text-only path: pass prompt via -p flag
+            cmd = ["claude", "-p", augmented, "--model", model,
+                   "--dangerously-skip-permissions", "--max-turns", "20",
+                   "--output-format", "stream-json", "--verbose"]
         if session_id:
             cmd += ["--resume", session_id]
 
         proc = await asyncio.create_subprocess_exec(
             *cmd,
+            stdin=asyncio.subprocess.PIPE if stdin_data else asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
         )
+        if stdin_data:
+            proc.stdin.write(stdin_data)
+            await proc.stdin.drain()
+            proc.stdin.close()
+            print(f"[DEBUG stream] sent {len(stdin_data)} bytes via stdin (multimodal)", flush=True)
 
         final_sid = session_id
         parts: list[str] = []
@@ -1077,6 +1115,12 @@ async def ask(request: Request):
             assistant_text = ("[ERROR] " if is_error else "") + result_text
         else:
             assistant_text = "".join(parts)
+
+        # Fallback: if Claude crashed before system event, generate a local session_id
+        # so the user's message is not completely lost
+        if not final_sid and (prompt or attachments):
+            final_sid = f"local-{uuid.uuid4().hex[:12]}"
+            print(f"[WARN stream] no session_id received, using fallback sid={final_sid}", flush=True)
 
         if final_sid:
             _upsert_session(final_sid, prompt, assistant_text, attachments=attachments)
