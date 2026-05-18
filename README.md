@@ -18,6 +18,7 @@ The whole project is one file (`app.py`, ~700 lines) plus a `Dockerfile`, three 
 - Session list with delete, persistent across reloads, tooltip on hover
 - **Collapsible sidebar** — click the chevron in the header or hit `Ctrl/Cmd + B`; collapsed state is remembered in `localStorage` (`claude_sidebar_collapsed`)
 - Model picker — Sonnet 4.6, Opus 4.7, Haiku 4.5
+- **File & image upload** — drag-and-drop, file picker, or paste images/files into the composer; files are written to the workspace and referenced in the prompt so Claude can read them with its file tools
 - **Token-by-token streaming** — assistant replies appear word-by-word as Claude generates them (uses `--output-format stream-json`)
 - Live terminal panel showing `claude` CLI stderr (collapsible)
 - Dark theme
@@ -32,6 +33,8 @@ The whole project is one file (`app.py`, ~700 lines) plus a `Dockerfile`, three 
 | GET    | `/claude/sessions/{id}` | Get full session with messages |
 | DELETE | `/claude/sessions/{id}` | Delete a session |
 | POST   | `/claude/ask` | Send a prompt; returns an SSE stream of `text` (streaming deltas), `terminal`, `session_id`, `done` events |
+| POST   | `/claude/upload` | Upload files (multipart/form-data `files[]`); returns saved file metadata for use in `/claude/ask` |
+| GET    | `/claude/files/{path}` | Serve an uploaded file from the workspace |
 
 All `/claude/*` routes except `GET /claude` and `POST /claude/auth` require the HMAC token in the `X-Token` header.
 
@@ -42,6 +45,7 @@ All `/claude/*` routes except `GET /claude` and `POST /claude/auth` require the 
 | `APP_PASSWORD` | _(empty)_ | Required. Plaintext password used to derive the HMAC token. With an empty value the app rejects every authenticated request. |
 | `OBSIDIAN_PATH` | `/home/node/obsidian` | Working directory for the post-reply `git add/commit/pull/push` cycle. Set to a vault you want auto-synced, or leave alone — failures are swallowed silently. |
 | `SESSIONS_FILE` | `/home/node/sessions.json` | Path to the JSON file that stores chat history. Created on first write. |
+| `UPLOAD_DIR` | `/home/node/workspace/.uploads` | Directory where uploaded files are stored. Created on first upload. |
 
 The underlying `claude` CLI reads its own variables (most importantly `ANTHROPIC_API_KEY`) — see the [Claude Code docs](https://docs.anthropic.com/en/docs/claude-code) for the full list. `app.py` only forwards the existing process environment, plus `HOME=/home/node`.
 
@@ -51,7 +55,7 @@ Prerequisite: install the `claude` CLI globally.
 
 ```bash
 npm install -g @anthropic-ai/claude-code
-pip install fastapi uvicorn
+pip install fastapi uvicorn python-multipart
 APP_PASSWORD=secret \
 ANTHROPIC_API_KEY=sk-ant-... \
 python3 -m uvicorn app:app --port 8080
@@ -99,6 +103,6 @@ Replace `IMAGE_TAG` in `k8s/deployment.yaml` with the image tag you pushed to GH
 
 - Sessions can't be renamed or searched
 - No mobile / responsive layout
-- No file/image upload or download
+- No file/image download from Claude's output (workspace browser planned)
 - No slash-command picker or skills browser
 - Single-file architecture is intentional but constrains how much UI complexity is sensible

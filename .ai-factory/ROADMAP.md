@@ -9,7 +9,7 @@
 - [x] **Persistent Sessions** — All chats stored in `SESSIONS_FILE`, restored on reload, listed in collapsible sidebar
 - [x] **Model Picker & Live Terminal** — Switch between Sonnet/Opus/Haiku, watch `claude` CLI stderr stream live
 - [x] **Token-by-Token Streaming** — Replace single-chunk reply with real-time streaming using `claude --output-format stream-json`, so messages appear as they are generated
-- [ ] **File & Image Upload** — Drag-and-drop and paste attachments into the composer; forward them to the `claude` CLI via stdin/temp files so the model can read images and source files
+- [x] **File & Image Upload** — Drag-and-drop and paste attachments into the composer; forward them to the `claude` CLI via stdin/temp files so the model can read images and source files
 - [ ] **File & Image Download** — Detect files Claude wrote or modified inside the workspace, render images inline, expose a per-message download tray
 - [ ] **Slash Command Picker** — Typing `/` opens an autocomplete menu of available slash commands (skills) with descriptions, inserts the chosen command into the composer
 - [ ] **Skills & Agents Browser** — A dedicated panel listing installed skills/subagents with descriptions, one-click insert into the prompt
@@ -30,3 +30,4 @@
 | Persistent Sessions | 2026-05-18 |
 | Model Picker & Live Terminal | 2026-05-18 |
 | Token-by-Token Streaming | 2026-05-18 |
+| File & Image Upload | 2026-05-18 |
