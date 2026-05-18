@@ -10,6 +10,17 @@ app = FastAPI()
 APP_PASSWORD     = os.environ.get("APP_PASSWORD", "")
 OBSIDIAN_PATH    = os.environ.get("OBSIDIAN_PATH", "/home/node/obsidian")
 SESSIONS_FILE    = Path(os.environ.get("SESSIONS_FILE", "/home/node/sessions.json"))
+# Multi-user: USERS=alice:pass1,bob:pass2  (overrides APP_PASSWORD when set)
+_USERS: dict = {}
+_raw_users = os.environ.get("USERS", "").strip()
+if _raw_users:
+    for _entry in _raw_users.split(","):
+        _entry = _entry.strip()
+        if ":" in _entry:
+            _u, _, _p = _entry.partition(":")
+            if _u.strip():
+                _USERS[_u.strip()] = _p.strip()
+    print(f"[INFO auth] multi-user mode: {list(_USERS.keys())}", flush=True)
 UPLOAD_DIR       = Path(os.environ.get("UPLOAD_DIR", "/home/node/workspace/.uploads"))
 WORKSPACE_DIR    = Path(os.environ.get("WORKSPACE_DIR", "/home/node/workspace"))
 COMMANDS_DIR     = Path(os.environ.get("COMMANDS_DIR", "/home/node/.claude/commands"))
@@ -204,15 +215,17 @@ def _safe_filename(name: str) -> str:
 
 # ── Sessions ──────────────────────────────────────────────────────
 
-def _load_sessions() -> list:
+def _load_sessions(sf: Optional[Path] = None) -> list:
+    f = sf or SESSIONS_FILE
     try:
-        return json.loads(SESSIONS_FILE.read_text()) if SESSIONS_FILE.exists() else []
+        return json.loads(f.read_text()) if f.exists() else []
     except Exception:
         return []
 
-def _write_sessions(sessions: list):
-    SESSIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    SESSIONS_FILE.write_text(json.dumps(sessions, ensure_ascii=False, indent=2))
+def _write_sessions(sessions: list, sf: Optional[Path] = None):
+    f = sf or SESSIONS_FILE
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps(sessions, ensure_ascii=False, indent=2))
 
 _MAX_INLINE_BYTES = 50_000  # embed up to 50 KB of text file content inline
 
@@ -251,8 +264,9 @@ def _build_prompt(prompt: str, attachments: list[dict]) -> str:
 
 def _upsert_session(session_id: str, user_msg: str, assistant_msg: str,
                     attachments: Optional[list] = None,
-                    output_files: Optional[list] = None):
-    sessions = _load_sessions()
+                    output_files: Optional[list] = None,
+                    sf: Optional[Path] = None):
+    sessions = _load_sessions(sf)
     now = datetime.utcnow().isoformat()
     user_record: dict = {"role": "user", "text": user_msg}
     if attachments:
@@ -265,7 +279,7 @@ def _upsert_session(session_id: str, user_msg: str, assistant_msg: str,
         if s["session_id"] == session_id:
             s["updated_at"] = now
             s["messages"].extend([user_record, assistant_record])
-            _write_sessions(sessions)
+            _write_sessions(sessions, sf)
             return
     title = user_msg[:60] + ("…" if len(user_msg) > 60 else "")
     sessions.insert(0, {
@@ -275,7 +289,7 @@ def _upsert_session(session_id: str, user_msg: str, assistant_msg: str,
         "updated_at": now,
         "messages": [user_record, assistant_record],
     })
-    _write_sessions(sessions)
+    _write_sessions(sessions, sf)
 
 
 # ── Git push ──────────────────────────────────────────────────────
@@ -312,8 +326,41 @@ async def _git_push(env: dict):
 
 # ── Auth ──────────────────────────────────────────────────────────
 
+def _make_user_token(username: str, password: str) -> str:
+    return hmac.new(b"claude-ui-user", f"{username}:{password}".encode(), hashlib.sha256).hexdigest()
+
+
+def _authorized_user(request: Request) -> Optional[str]:
+    """Return username (str) if authorized, None otherwise."""
+    tok = request.headers.get("X-Token", "")
+    if not tok:
+        return None
+    if _USERS:
+        # Multi-user: token = "username:hmachex"
+        if ":" not in tok:
+            return None
+        username, _, tok_hex = tok.partition(":")
+        pwd = _USERS.get(username)
+        if pwd is None:
+            return None
+        expected = _make_user_token(username, pwd)
+        return username if hmac.compare_digest(tok_hex, expected) else None
+    # Single-user fallback
+    if _TOKEN and hmac.compare_digest(tok, _TOKEN):
+        return "default"
+    return None
+
+
 def _authorized(request: Request) -> bool:
-    return bool(_TOKEN) and hmac.compare_digest(request.headers.get("X-Token", ""), _TOKEN)
+    return _authorized_user(request) is not None
+
+
+def _sessions_file(username: str = "default") -> Path:
+    """Return the sessions file path for the given user."""
+    if not _USERS or username == "default":
+        return SESSIONS_FILE
+    safe = re.sub(r"[^\w\-]", "_", username)
+    return SESSIONS_FILE.parent / f"sessions_{safe}.json"
 
 
 # ── HTML ──────────────────────────────────────────────────────────
@@ -710,7 +757,8 @@ HTML = r"""<!DOCTYPE html>
   <div id="auth">
     <div class="auth-card">
       <h2>⚡ Claude</h2>
-      <input type="password" id="pwd" placeholder="Пароль" autofocus>
+      <input type="text" id="uname" placeholder="Имя пользователя" style="display:none" autocomplete="username">
+      <input type="password" id="pwd" placeholder="Пароль" autofocus autocomplete="current-password">
       <button id="login-btn">Войти</button>
       <div class="err" id="auth-err"></div>
     </div>
@@ -992,7 +1040,21 @@ HTML = r"""<!DOCTYPE html>
 
     const authEl   = document.getElementById('auth');
     const pwdEl    = document.getElementById('pwd');
+    const unameEl  = document.getElementById('uname');
     const authErr  = document.getElementById('auth-err');
+    let _multiUser = false;
+
+    // Detect multi-user mode and show/hide username field
+    fetch('/claude/auth/config').then(r => r.json()).then(cfg => {
+      _multiUser = cfg.multi_user;
+      if (_multiUser) {
+        unameEl.style.display = '';
+        unameEl.placeholder = 'Имя пользователя';
+        pwdEl.removeAttribute('autofocus');
+        unameEl.setAttribute('autofocus', '');
+        unameEl.focus();
+      }
+    }).catch(() => {});
     const messages    = document.getElementById('messages');
     const input       = document.getElementById('input');
     const send        = document.getElementById('send');
@@ -1283,7 +1345,8 @@ HTML = r"""<!DOCTYPE html>
       try {
         const r = await fetch('/claude/sessions', { headers: {'X-Token': token} });
         if (!r.ok) return;
-        renderSessions(await r.json());
+        const d = await r.json();
+        renderSessions(Array.isArray(d) ? d : (d.sessions || []));
       } catch(e) {}
     }
 
@@ -1435,7 +1498,8 @@ HTML = r"""<!DOCTYPE html>
       try {
         const r = await fetch('/claude/sessions?archived=true', {headers:{'X-Token':token}});
         if (!r.ok) return;
-        const list = await r.json();
+        const raw = await r.json();
+        const list = Array.isArray(raw) ? raw : (raw.sessions || []);
         const countEl = document.getElementById('archive-count');
         if (countEl) countEl.textContent = list.length || '';
         renderArchivedSessions(list);
@@ -1538,19 +1602,24 @@ HTML = r"""<!DOCTYPE html>
       authErr.textContent = '';
       const pwd = pwdEl.value.trim();
       if (!pwd) return;
+      const uname = unameEl.value.trim();
+      const body = _multiUser && uname
+        ? {username: uname, password: pwd}
+        : {password: pwd};
       try {
         const r = await fetch('/claude/auth', {
           method: 'POST', headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({password: pwd}),
+          body: JSON.stringify(body),
         });
         const d = await r.json();
         if (r.ok && d.token) {
           token = d.token;
           localStorage.setItem(TOKEN_KEY, token);
+          if (d.username) localStorage.setItem('claude_username', d.username);
           authEl.classList.add('hidden');
           await afterAuth();
         } else {
-          authErr.textContent = 'Неверный пароль';
+          authErr.textContent = _multiUser ? 'Неверный логин или пароль' : 'Неверный пароль';
           pwdEl.value = ''; pwdEl.focus();
         }
       } catch(e) { authErr.textContent = 'Ошибка соединения'; }
@@ -1821,6 +1890,7 @@ HTML = r"""<!DOCTYPE html>
     }
 
     document.getElementById('login-btn').addEventListener('click', tryLogin);
+    unameEl.addEventListener('keydown', e => { if (e.key === 'Enter') pwdEl.focus(); });
     pwdEl.addEventListener('keydown', e => { if (e.key === 'Enter') tryLogin(); });
 
     document.getElementById('new-chat-btn').addEventListener('click', () => {
@@ -1836,9 +1906,17 @@ HTML = r"""<!DOCTYPE html>
       fetch('/claude/auth', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({token}),
-      }).then(r => {
-        if (r.ok) { authEl.classList.add('hidden'); afterAuth(); }
-        else { localStorage.removeItem(TOKEN_KEY); token = ''; }
+      }).then(async r => {
+        if (r.ok) {
+          const d = await r.json().catch(() => ({}));
+          if (d.username) localStorage.setItem('claude_username', d.username);
+          authEl.classList.add('hidden');
+          afterAuth();
+        } else {
+          localStorage.removeItem(TOKEN_KEY);
+          localStorage.removeItem('claude_username');
+          token = '';
+        }
       }).catch(() => {});
     }
 
@@ -2476,13 +2554,17 @@ HTML = r"""<!DOCTYPE html>
 
 @app.get("/claude/health")
 async def health(request: Request):
-    if not _authorized(request):
+    user = _authorized_user(request)
+    if user is None:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    sessions = _load_sessions()
+    sf = _sessions_file(user)
+    sessions = _load_sessions(sf)
     active = sum(1 for s in sessions if not s.get("archived"))
     archived = sum(1 for s in sessions if s.get("archived"))
     return JSONResponse({
         "status": "ok",
+        "user": user if _USERS else None,
+        "multi_user": bool(_USERS),
         "sessions": {"active": active, "archived": archived, "total": len(sessions)},
         "workspace_exists": WORKSPACE_DIR.exists(),
         "commands_dir_exists": COMMANDS_DIR.exists(),
@@ -2516,9 +2598,37 @@ async def index():
     return HTMLResponse(HTML)
 
 
+@app.get("/claude/auth/config")
+async def auth_config():
+    return JSONResponse({"multi_user": bool(_USERS)})
+
+
 @app.post("/claude/auth")
 async def auth(request: Request):
     body = await request.json()
+
+    # ── Multi-user mode ───────────────────────────────────────────
+    if _USERS:
+        if "username" in body and "password" in body:
+            username = (body.get("username") or "").strip()
+            password = body.get("password") or ""
+            pwd = _USERS.get(username)
+            if pwd is not None and hmac.compare_digest(pwd, password):
+                token = f"{username}:{_make_user_token(username, pwd)}"
+                print(f"[INFO auth] user '{username}' logged in", flush=True)
+                return JSONResponse({"token": token, "username": username})
+            return JSONResponse({"error": "wrong credentials"}, status_code=401)
+        if "token" in body:
+            tok = body.get("token") or ""
+            if ":" in tok:
+                username, _, tok_hex = tok.partition(":")
+                pwd = _USERS.get(username)
+                if pwd and hmac.compare_digest(tok_hex, _make_user_token(username, pwd)):
+                    return JSONResponse({"ok": True, "username": username})
+            return JSONResponse({"error": "invalid token"}, status_code=401)
+        return JSONResponse({"error": "bad request"}, status_code=400)
+
+    # ── Single-user mode (backward compat) ───────────────────────
     if "password" in body:
         if APP_PASSWORD and hmac.compare_digest(body["password"], APP_PASSWORD):
             return JSONResponse({"token": _TOKEN})
@@ -2532,24 +2642,28 @@ async def auth(request: Request):
 
 @app.get("/claude/sessions")
 async def list_sessions(request: Request, archived: bool = False):
-    if not _authorized(request):
+    user = _authorized_user(request)
+    if user is None:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    sessions = _load_sessions()
+    sf = _sessions_file(user)
+    sessions = _load_sessions(sf)
     filtered = [s for s in sessions if bool(s.get("archived", False)) == archived]
-    print(f"[DEBUG sessions] list archived={archived}: {len(filtered)} sessions", flush=True)
-    return JSONResponse([{k: v for k, v in s.items() if k != "messages"} for s in filtered])
+    print(f"[DEBUG sessions] list user={user} archived={archived}: {len(filtered)} sessions", flush=True)
+    return JSONResponse({"sessions": [{k: v for k, v in s.items() if k != "messages"} for s in filtered]})
 
 
 @app.get("/claude/sessions/search")
 async def search_sessions(request: Request, q: str = ""):
-    if not _authorized(request):
+    user = _authorized_user(request)
+    if user is None:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
+    sf = _sessions_file(user)
     q = q.strip()
     if not q:
         return JSONResponse({"results": []})
     ql = q.lower()
     results = []
-    for s in _load_sessions():
+    for s in _load_sessions(sf):
         if s.get("archived"):
             continue
         matches = 0
@@ -2579,9 +2693,11 @@ async def search_sessions(request: Request, q: str = ""):
 
 @app.get("/claude/sessions/{session_id}")
 async def get_session(session_id: str, request: Request):
-    if not _authorized(request):
+    user = _authorized_user(request)
+    if user is None:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    for s in _load_sessions():
+    sf = _sessions_file(user)
+    for s in _load_sessions(sf):
         if s["session_id"] == session_id:
             return JSONResponse(s)
     return JSONResponse({"error": "not found"}, status_code=404)
@@ -2589,39 +2705,45 @@ async def get_session(session_id: str, request: Request):
 
 @app.delete("/claude/sessions/{session_id}")
 async def delete_session(session_id: str, request: Request):
-    if not _authorized(request):
+    user = _authorized_user(request)
+    if user is None:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    sessions = _load_sessions()
+    sf = _sessions_file(user)
+    sessions = _load_sessions(sf)
     now = datetime.utcnow().isoformat()
     for s in sessions:
         if s["session_id"] == session_id:
             s["archived"] = True
             s["updated_at"] = now
-            _write_sessions(sessions)
-            print(f"[INFO sessions] archived sid={session_id}", flush=True)
+            _write_sessions(sessions, sf)
+            print(f"[INFO sessions] archived sid={session_id} user={user}", flush=True)
             return JSONResponse({"ok": True, "archived": True})
     return JSONResponse({"error": "not found"}, status_code=404)
 
 
 @app.delete("/claude/sessions/{session_id}/permanent")
 async def permanent_delete_session(session_id: str, request: Request):
-    if not _authorized(request):
+    user = _authorized_user(request)
+    if user is None:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    sessions = _load_sessions()
+    sf = _sessions_file(user)
+    sessions = _load_sessions(sf)
     new_sessions = [s for s in sessions if s["session_id"] != session_id]
     if len(new_sessions) == len(sessions):
         return JSONResponse({"error": "not found"}, status_code=404)
-    _write_sessions(new_sessions)
-    print(f"[INFO sessions] permanently deleted sid={session_id}", flush=True)
+    _write_sessions(new_sessions, sf)
+    print(f"[INFO sessions] permanently deleted sid={session_id} user={user}", flush=True)
     return JSONResponse({"ok": True})
 
 
 @app.patch("/claude/sessions/{session_id}")
 async def update_session(session_id: str, request: Request):
-    if not _authorized(request):
+    user = _authorized_user(request)
+    if user is None:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
+    sf = _sessions_file(user)
     body = await request.json()
-    sessions = _load_sessions()
+    sessions = _load_sessions(sf)
     now = datetime.utcnow().isoformat()
     for s in sessions:
         if s["session_id"] == session_id:
@@ -2633,25 +2755,26 @@ async def update_session(session_id: str, request: Request):
                 s["archived"] = bool(body["archived"])
                 s["updated_at"] = now
                 print(f"[INFO sessions] set archived={s['archived']} sid={session_id}", flush=True)
-            _write_sessions(sessions)
+            _write_sessions(sessions, sf)
             return JSONResponse({k: v for k, v in s.items() if k != "messages"})
     return JSONResponse({"error": "not found"}, status_code=404)
 
 
 @app.post("/claude/sessions/{session_id}/truncate")
 async def truncate_session(session_id: str, request: Request):
-    """Keep only the first `keep` messages; remove the rest."""
-    if not _authorized(request):
+    user = _authorized_user(request)
+    if user is None:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
+    sf = _sessions_file(user)
     body = await request.json()
     keep = int(body.get("keep", 0))
-    sessions = _load_sessions()
+    sessions = _load_sessions(sf)
     for s in sessions:
         if s["session_id"] == session_id:
             original = len(s.get("messages", []))
             s["messages"] = s.get("messages", [])[:keep]
-            s["updated_at"] = __import__("datetime").datetime.utcnow().isoformat()
-            _write_sessions(sessions)
+            s["updated_at"] = datetime.utcnow().isoformat()
+            _write_sessions(sessions, sf)
             print(f"[INFO sessions] truncated sid={session_id} kept={keep} removed={original - keep}", flush=True)
             return JSONResponse({"kept": keep, "removed": original - keep})
     return JSONResponse({"error": "not found"}, status_code=404)
@@ -2659,10 +2782,12 @@ async def truncate_session(session_id: str, request: Request):
 
 @app.get("/claude/sessions/{session_id}/export")
 async def export_session(session_id: str, request: Request, format: str = "md"):
-    if not _authorized(request):
+    user = _authorized_user(request)
+    if user is None:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
+    sf = _sessions_file(user)
     from fastapi.responses import Response as FResponse
-    for s in _load_sessions():
+    for s in _load_sessions(sf):
         if s["session_id"] == session_id:
             safe_title = re.sub(r"[^\w\s-]", "", s.get("title", "session"))[:40].strip().replace(" ", "_")
             base = f"claude_{safe_title or session_id[:8]}"
@@ -2926,7 +3051,8 @@ async def workspace_upload(request: Request,
 
 
 async def _anthropic_stream(prompt: str, augmented: str, image_attachments: list,
-                            model: str, session_id: str, attachments: list):
+                            model: str, session_id: str, attachments: list,
+                            sf: Optional[Path] = None):
     """Async SSE generator for multimodal messages.
     Uses claude CLI with --input-format stream-json so it can use its own credentials.
     """
@@ -3061,14 +3187,16 @@ async def _anthropic_stream(prompt: str, augmented: str, image_attachments: list
     if not final_sid:
         final_sid = f"img-{uuid.uuid4().hex[:12]}"
     _active_streams.pop(stream_id, None)
-    _upsert_session(final_sid, prompt, assistant_text, attachments=attachments, output_files=output_files or None)
+    _upsert_session(final_sid, prompt, assistant_text, attachments=attachments, output_files=output_files or None, sf=sf)
     print(f"[INFO multimodal] session saved sid={final_sid} text_len={len(assistant_text)}", flush=True)
 
 
 @app.post("/claude/ask")
 async def ask(request: Request):
-    if not _authorized(request):
+    user = _authorized_user(request)
+    if user is None:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
+    sf = _sessions_file(user)
 
     body        = await request.json()
     prompt      = (body.get("prompt") or "").strip()
@@ -3214,7 +3342,7 @@ async def ask(request: Request):
 
         if final_sid:
             _upsert_session(final_sid, prompt, assistant_text, attachments=attachments,
-                            output_files=output_files or None)
+                            output_files=output_files or None, sf=sf)
             print(f"[INFO stream] session saved sid={final_sid} text_len={len(assistant_text)} is_error={is_error} attachments={len(attachments)}", flush=True)
         _active_streams.pop(stream_id, None)
         asyncio.create_task(_git_push(env))
@@ -3222,7 +3350,7 @@ async def ask(request: Request):
     if image_attachments:
         return StreamingResponse(
             _anthropic_stream(prompt, augmented, image_attachments, model,
-                              session_id, attachments),
+                              session_id, attachments, sf=sf),
             media_type="text/event-stream",
             headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
         )
