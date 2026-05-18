@@ -13,7 +13,7 @@
 - [ ] **File & Image Download** — Detect files Claude wrote or modified inside the workspace, render images inline, expose a per-message download tray
 - [ ] **Slash Command Picker** — Typing `/` opens an autocomplete menu of available slash commands (skills) with descriptions, inserts the chosen command into the composer
 - [ ] **Skills & Agents Browser** — A dedicated panel listing installed skills/subagents with descriptions, one-click insert into the prompt
-- [ ] **Markdown & Code Rendering** — Proper markdown rendering of replies with syntax-highlighted code blocks, copy-code buttons, tables, and Mermaid diagrams
+- [x] **Markdown & Code Rendering** — Proper markdown rendering of replies with syntax-highlighted code blocks, copy-code buttons, tables, and Mermaid diagrams
 - [ ] **Session Management Upgrades** — Rename sessions, full-text search across history, export to markdown, archive instead of delete
 - [ ] **Workspace File Browser** — Side panel showing the contents of `/home/node/workspace`, view/download/upload files without going through chat
 - [ ] **Mobile & Responsive Layout** — Sidebar becomes a drawer, composer is thumb-friendly, attachments work from the camera roll
@@ -31,3 +31,4 @@
 | Model Picker & Live Terminal | 2026-05-18 |
 | Token-by-Token Streaming | 2026-05-18 |
 | File & Image Upload | 2026-05-18 |
+| Markdown & Code Rendering | 2026-05-18 |

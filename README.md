@@ -5,7 +5,7 @@ A tiny FastAPI wrapper around the `claude` CLI that exposes a single-page chat U
 ## Stack
 
 - **Backend:** Python 3, [FastAPI](https://fastapi.tiangolo.com/), Uvicorn (ASGI server)
-- **Frontend:** vanilla HTML + CSS + JS, all embedded as a single string inside `app.py`
+- **Frontend:** vanilla HTML + CSS + JS, all embedded as a single string inside `app.py`; markdown rendering via [marked@13](https://marked.js.org), [highlight.js@11.9](https://highlightjs.org), [mermaid@11](https://mermaid.js.org) (loaded from jsDelivr CDN)
 - **Engine:** [`@anthropic-ai/claude-code`](https://github.com/anthropics/claude-code) CLI, invoked as a subprocess for every prompt
 - **Persistence:** plain JSON file (`SESSIONS_FILE`), one document holds every session
 - **Optional:** git auto-push of `OBSIDIAN_PATH` after each successful reply
@@ -18,6 +18,7 @@ The whole project is one file (`app.py`, ~700 lines) plus a `Dockerfile`, three 
 - Session list with delete, persistent across reloads, tooltip on hover
 - **Collapsible sidebar** — click the chevron in the header or hit `Ctrl/Cmd + B`; collapsed state is remembered in `localStorage` (`claude_sidebar_collapsed`)
 - Model picker — Sonnet 4.6, Opus 4.7, Haiku 4.5
+- **Markdown & code rendering** — assistant replies rendered as markdown with syntax-highlighted code blocks (highlight.js), one-click copy buttons, and Mermaid diagram support
 - **File & image upload** — drag-and-drop, file picker, or paste images/files into the composer; files are written to the workspace and referenced in the prompt so Claude can read them with its file tools
 - **Token-by-token streaming** — assistant replies appear word-by-word as Claude generates them (uses `--output-format stream-json`)
 - Live terminal panel showing `claude` CLI stderr (collapsible)
