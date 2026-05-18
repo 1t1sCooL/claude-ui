@@ -461,6 +461,7 @@ HTML = r"""<!DOCTYPE html>
     /* ── Messages ────────────────────────────────────── */
     @keyframes msgIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
     @keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
+    #main-messages-wrap{position:relative;flex:1;overflow:hidden;display:flex;flex-direction:column;min-height:0}
     #messages{flex:1;overflow-y:auto;padding:24px 20px;display:flex;flex-direction:column;gap:14px}
     .msg{max-width:82%;animation:msgIn .22s ease both}
     .msg.user{align-self:flex-end}
@@ -554,6 +555,10 @@ HTML = r"""<!DOCTYPE html>
 
     /* Drag-over */
     body.drag-over #messages{outline:2px dashed var(--accent);outline-offset:-4px}
+    #scroll-to-bottom{position:absolute;bottom:14px;right:14px;background:var(--bg3);border:1px solid var(--border2);color:var(--text2);border-radius:20px;padding:5px 12px;font-size:12px;cursor:pointer;display:none;align-items:center;gap:5px;box-shadow:0 2px 12px var(--shadow);transition:background .15s,transform .1s;z-index:10;font-family:inherit}
+    #scroll-to-bottom.visible{display:flex}
+    #scroll-to-bottom:hover{background:var(--bg4);transform:translateY(-1px)}
+    #main-messages-wrap{position:relative;flex:1;overflow:hidden;display:flex;flex-direction:column}
 
     /* ── Markdown ─────────────────────────────────────── */
     .bubble.rendered{white-space:normal}
@@ -761,8 +766,11 @@ HTML = r"""<!DOCTYPE html>
       <button id="shortcuts-btn" title="Горячие клавиши" aria-label="Горячие клавиши" style="width:32px;height:32px;flex-shrink:0;background:var(--bg3);border:1px solid var(--border2);color:var(--text3);border-radius:8px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;margin-left:4px;transition:background .15s,color .15s;font-family:inherit">?</button>
     </div>
 
-    <div id="messages">
-      <div class="msg assistant"><div class="bubble">Привет! Чем могу помочь?</div></div>
+    <div id="main-messages-wrap">
+      <div id="messages">
+        <div class="msg assistant"><div class="bubble">Привет! Чем могу помочь?</div></div>
+      </div>
+      <button id="scroll-to-bottom">↓ Вниз</button>
     </div>
 
     <div id="term-panel">
@@ -982,11 +990,31 @@ HTML = r"""<!DOCTYPE html>
     const authEl   = document.getElementById('auth');
     const pwdEl    = document.getElementById('pwd');
     const authErr  = document.getElementById('auth-err');
-    const messages = document.getElementById('messages');
-    const input    = document.getElementById('input');
-    const send     = document.getElementById('send');
-    const form     = document.getElementById('form');
-    const sesList  = document.getElementById('session-list');
+    const messages    = document.getElementById('messages');
+    const input       = document.getElementById('input');
+    const send        = document.getElementById('send');
+    const form        = document.getElementById('form');
+    const sesList     = document.getElementById('session-list');
+    const scrollBtn   = document.getElementById('scroll-to-bottom');
+    let _autoScroll   = true;
+
+    function scrollToBottom() {
+      messages.scrollTop = messages.scrollHeight;
+      _autoScroll = true;
+      scrollBtn.classList.remove('visible');
+    }
+
+    function maybeScroll() {
+      if (_autoScroll) messages.scrollTop = messages.scrollHeight;
+    }
+
+    messages.addEventListener('scroll', () => {
+      const atBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 60;
+      _autoScroll = atBottom;
+      scrollBtn.classList.toggle('visible', !atBottom);
+    });
+
+    scrollBtn.addEventListener('click', scrollToBottom);
     let searchQuery = '';
     let _searchTimer = null;
     let _inFullTextSearch = false;
@@ -1369,6 +1397,8 @@ HTML = r"""<!DOCTYPE html>
         if (!s.messages?.length) {
           messages.innerHTML = '<div class="msg assistant"><div class="bubble">Привет! Чем могу помочь?</div></div>';
         }
+        _autoScroll = true;
+        scrollBtn.classList.remove('visible');
         messages.scrollTop = messages.scrollHeight;
         termClear();
       } catch(e) {}
@@ -2039,7 +2069,7 @@ HTML = r"""<!DOCTYPE html>
         div.appendChild(actions);
       }
       messages.appendChild(div);
-      messages.scrollTop = messages.scrollHeight;
+      maybeScroll();
       return b;
     }
 
@@ -2364,7 +2394,7 @@ HTML = r"""<!DOCTYPE html>
                 if (data.text) {
                   rawText += data.text;
                   bubble.textContent += data.text;
-                  messages.scrollTop = messages.scrollHeight;
+                  maybeScroll();
                 }
                 if (data.terminal) {
                   const cls = data.terminal.startsWith('⚡') ? 'tool'
