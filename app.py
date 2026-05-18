@@ -1322,14 +1322,29 @@ HTML = r"""<!DOCTYPE html>
         items.forEach(skill => {
           const item = document.createElement('div');
           item.className = 'skill-item';
-          item.innerHTML = `
-            <span class="skill-trigger">${skill.trigger}</span>
-            <div class="skill-info">
-              <div class="skill-desc">${skill.description || '—'}</div>
-              ${skill.argument_hint ? `<div class="skill-hint">${skill.argument_hint}</div>` : ''}
-            </div>
-            ${src !== 'skills' ? `<span class="skill-source">${src}</span>` : ''}
-          `;
+          const trigEl = document.createElement('span');
+          trigEl.className = 'skill-trigger';
+          trigEl.textContent = skill.trigger;
+          const info = document.createElement('div');
+          info.className = 'skill-info';
+          const desc = document.createElement('div');
+          desc.className = 'skill-desc';
+          desc.textContent = skill.description || '—';
+          info.appendChild(desc);
+          if (skill.argument_hint) {
+            const hint = document.createElement('div');
+            hint.className = 'skill-hint';
+            hint.textContent = skill.argument_hint;
+            info.appendChild(hint);
+          }
+          item.appendChild(trigEl);
+          item.appendChild(info);
+          if (src !== 'skills') {
+            const badge = document.createElement('span');
+            badge.className = 'skill-source';
+            badge.textContent = src;
+            item.appendChild(badge);
+          }
           item.addEventListener('click', () => {
             const ins = skill.trigger + (skill.argument_hint ? ' ' : '');
             const cur = input.value;
@@ -1970,7 +1985,9 @@ HTML = r"""<!DOCTYPE html>
 # ── Routes ────────────────────────────────────────────────────────
 
 @app.get("/claude/health")
-async def health():
+async def health(request: Request):
+    if not _authorized(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
     sessions = _load_sessions()
     active = sum(1 for s in sessions if not s.get("archived"))
     archived = sum(1 for s in sessions if s.get("archived"))
@@ -2265,7 +2282,7 @@ async def workspace_upload(request: Request,
     if not files:
         return JSONResponse({"error": "no files"}, status_code=400)
     # Sanitize target directory
-    safe_dir = Path(dir.lstrip("/")).resolve() if dir else Path(".")
+    safe_dir = Path(dir.lstrip("/")) if dir else Path(".")
     target = (WORKSPACE_DIR / safe_dir).resolve()
     try:
         target.relative_to(WORKSPACE_DIR.resolve())
