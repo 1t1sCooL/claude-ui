@@ -443,7 +443,7 @@ HTML = r"""<!DOCTYPE html>
     /* ── Base ────────────────────────────────────────── */
     *{box-sizing:border-box;margin:0;padding:0}
     html,body{height:100%;font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--text)}
-    body{display:flex;height:100vh;overflow:hidden}
+    body{display:flex;height:100dvh;overflow:hidden}
     *::-webkit-scrollbar{width:4px;height:4px}
     *::-webkit-scrollbar-track{background:transparent}
     *::-webkit-scrollbar-thumb{background:var(--bg5);border-radius:4px}
