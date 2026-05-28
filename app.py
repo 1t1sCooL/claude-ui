@@ -3571,6 +3571,7 @@ async def ask(request: Request):
 
         async def _stdout_line_reader():
             prev_len = 0
+            prev_full_text = ""
             async for raw in proc.stdout:
                 line = raw.decode("utf-8", errors="replace").strip()
                 if not line:
@@ -3592,12 +3593,18 @@ async def ask(request: Request):
                     full_text = ""
                     for c in content:
                         if isinstance(c, dict) and c.get("type") == "text":
-                            full_text = c.get("text", "")
+                            full_text += c.get("text", "")
+                    # New assistant turn after tool call: text doesn't continue from previous
+                    if prev_len > 0 and not full_text.startswith(prev_full_text):
+                        prev_len = 0
+                    if len(full_text) < prev_len:
+                        prev_len = 0
                     delta = full_text[prev_len:]
                     if delta:
                         print(f"[DEBUG stream] delta len={len(delta)}", flush=True)
                         await q.put(("delta", delta))
                         prev_len = len(full_text)
+                        prev_full_text = full_text
                 elif etype == "result":
                     await q.put(("result", {
                         "text":     event.get("result", ""),
