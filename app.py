@@ -866,7 +866,7 @@ HTML = r"""<!DOCTYPE html>
       <div class="dot"></div>
       <span id="header-title">Claude</span>
       <select id="model">
-        <option value="fable">Fable 5</option>
+        <option value="claude-fable-5">Fable 5</option>
         <option value="claude-opus-4-8">Opus 4.8</option>
         <option value="claude-sonnet-4-6">Sonnet 4.6</option>
         <option value="claude-opus-4-7">Opus 4.7</option>
@@ -3518,7 +3518,7 @@ async def ask(request: Request):
     model       = (body.get("model") or "claude-sonnet-4-6").strip()
     session_id  = (body.get("session_id") or "").strip()
     attachments = body.get("attachments") or []
-    if model not in {"claude-sonnet-4-6", "claude-opus-4-7", "claude-haiku-4-5-20251001"}:
+    if model not in {"claude-fable-5", "claude-opus-4-8", "claude-sonnet-4-6", "claude-opus-4-7", "claude-haiku-4-5-20251001"}:
         model = "claude-sonnet-4-6"
     if not prompt:
         return JSONResponse({"error": "empty prompt"})
